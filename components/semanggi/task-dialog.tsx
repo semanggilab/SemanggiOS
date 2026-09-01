@@ -1,13 +1,13 @@
 "use client";
 
-// Popup satu task: informasi, linimasa, persetujuan, komentar, dan kendali.
+// Single-task popup: info, timeline, approvals, comments, and controls.
 //
-// SATU ATURAN YANG MENGIKAT DI SINI
+// ONE RULE THAT BINDS EVERYTHING HERE
 //
-// Setiap tombol yang menghentikan pekerjaan menyebut apa yang dihentikan
-// sebelum melakukannya (§8.7). "Batalkan" bahkan menuntut nama task diketik,
-// karena CANCELLED adalah jalan buntu di mesin state — tidak ada yang kembali
-// dari sana — sementara "Hentikan" bisa dilanjutkan.
+// Every button that stops work names what it's stopping before doing it
+// (§8.7). "Cancel" even demands the task name be typed, because CANCELLED is
+// a dead end in the state machine — nothing comes back from it — while "Stop"
+// can be resumed.
 
 import { useCallback, useEffect, useState } from "react";
 import {
@@ -69,8 +69,8 @@ export function TaskDialog({
       .catch((err) => setError(err instanceof Error ? err.message : String(err)));
   }, [tab, taskId, turns.length]);
 
-  // Escape menutup: dialog yang hanya bisa ditutup dengan tombol kecil di pojok
-  // membuat orang mengklik di luar dan kehilangan komentar yang sedang ditulis.
+  // Escape closes: a dialog only closable via a tiny corner button makes
+  // people click outside and lose the comment they were writing.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();
@@ -107,15 +107,15 @@ export function TaskDialog({
             <div className="flex flex-wrap items-center gap-2">
               <code className="rounded bg-muted px-1.5 py-0.5 text-xs">{taskId}</code>
               {task ? <Badge tone={statusTone(task.status)}>{task.status}</Badge> : null}
-              {task?.expedited ? <Badge tone="warning">didahulukan</Badge> : null}
+              {task?.expedited ? <Badge tone="warning">expedited</Badge> : null}
               {task ? <Badge tone="neutral">{task.qualityClass}</Badge> : null}
-              {task?.workspaceMode === "read" ? <Badge tone="info">baca</Badge> : null}
+              {task?.workspaceMode === "read" ? <Badge tone="info">read</Badge> : null}
             </div>
-            <h2 className="mt-2 truncate text-lg font-semibold">{task?.title ?? "Memuat…"}</h2>
+            <h2 className="mt-2 truncate text-lg font-semibold">{task?.title ?? "Loading…"}</h2>
             {task?.waitReason ? <p className="mt-1 text-xs text-amber-600 dark:text-amber-300">{task.waitReason}</p> : null}
           </div>
           <Button variant="ghost" size="sm" onClick={onClose}>
-            Tutup
+            Close
           </Button>
         </div>
 
@@ -142,9 +142,9 @@ export function TaskDialog({
           <div className="flex gap-1 border-b border-border">
             {(
               [
-                ["info", "Informasi"],
-                ["timeline", `Linimasa (${events.length})`],
-                ["transcript", "Percakapan"],
+                ["info", "Info"],
+                ["timeline", `Timeline (${events.length})`],
+                ["transcript", "Transcript"],
               ] as Array<[Tab, string]>
             ).map(([id, label]) => (
               <button
@@ -163,13 +163,13 @@ export function TaskDialog({
           {tab === "timeline" ? <Timeline events={events} /> : null}
           {tab === "transcript" ? <Transcript turns={turns} /> : null}
 
-          <Card title="Komentar">
+          <Card title="Comments">
             <div className="flex flex-col gap-2">
               <textarea
                 value={comment}
                 onChange={(event) => setComment(event.target.value)}
                 rows={3}
-                placeholder="Catatan untuk task ini — tersimpan di log append-only dan muncul di linimasa."
+                placeholder="A note for this task — stored in the append-only log and shown in the timeline."
                 className="w-full resize-y rounded-md border border-border bg-background p-2 text-sm outline-none focus:ring-1 focus:ring-ring"
               />
               <div className="flex justify-end">
@@ -183,7 +183,7 @@ export function TaskDialog({
                     })
                   }
                 >
-                  Kirim komentar
+                  Send comment
                 </Button>
               </div>
             </div>
@@ -205,7 +205,7 @@ function ApprovalPanel({
 }) {
   const [note, setNote] = useState("");
   return (
-    <Card title="Menunggu keputusan Anda" className="border-amber-500/40">
+    <Card title="Needs your decision" className="border-amber-500/40">
       <div className="space-y-3">
         {approvals.map((a) => (
           <div key={a.id} className="space-y-2">
@@ -216,15 +216,15 @@ function ApprovalPanel({
             <input
               value={note}
               onChange={(event) => setNote(event.target.value)}
-              placeholder="Catatan (opsional, tersimpan bersama keputusan)"
+              placeholder="Note (optional, stored with the decision)"
               className="h-8 w-full rounded-md border border-border bg-background px-2 text-xs outline-none focus:ring-1 focus:ring-ring"
             />
             <div className="flex gap-2">
               <Button size="sm" disabled={busy} onClick={() => onDecide(a.id, "APPROVE", note || undefined)}>
-                Setujui
+                Approve
               </Button>
               <Button size="sm" variant="danger" disabled={busy} onClick={() => onDecide(a.id, "REJECT", note || undefined)}>
-                Tolak
+                Reject
               </Button>
             </div>
           </div>
@@ -258,78 +258,77 @@ function Controls({
   const held = task.status === "CREATED";
 
   return (
-    <Card title="Kendali">
+    <Card title="Controls">
       <div className="space-y-3">
         <div className="flex flex-wrap gap-2">
-          <Button size="sm" disabled={busy || !held} title={held ? "" : "Hanya task tertahan yang bisa dilepas"} onClick={() => act(() => semanggi.start(task.id))}>
-            Mulai
+          <Button size="sm" disabled={busy || !held} title={held ? "" : "Only a held task can be released"} onClick={() => act(() => semanggi.start(task.id))}>
+            Start
           </Button>
           <Button
             size="sm"
             variant="outline"
             disabled={busy || finished}
-            title={live ? "Menghentikan run yang sedang berjalan" : "Memarkir task supaya rencananya bisa diubah"}
-            onClick={() => act(() => semanggi.stop(task.id, "dihentikan lewat halaman Summary"))}
+            title={live ? "Stops the currently running execution" : "Parks the task so its plan can be changed"}
+            onClick={() => act(() => semanggi.stop(task.id, "stopped from the Summary page"))}
           >
-            Hentikan
+            Stop
           </Button>
           <Button
             size="sm"
             variant="outline"
             disabled={busy || finished}
-            title="Menaikkan prioritas sementara; pulih sendiri setelah 30 menit"
+            title="Temporarily raises priority; recovers on its own after 30 minutes"
             onClick={() => act(() => semanggi.expedite(task.id, 30 * 60_000))}
           >
-            Paksa jalan (30 menit)
+            Force-run (30 min)
           </Button>
           <Button size="sm" variant="outline" disabled={busy || !finished} onClick={() => act(() => semanggi.rerun(task.id, "FRESH"))}>
-            Jalankan ulang
+            Re-run
           </Button>
         </div>
 
-        {/* Mengubah model saat berjalan tidak berpengaruh pada run yang sedang
-            berlangsung — ia berlaku pada dispatch berikutnya. Menyebutkannya di
-            sini lebih murah daripada membiarkan operator menyimpulkan sendiri
-            dari hasil yang tidak berubah. */}
+        {/* Changing the model while running doesn't affect the current
+            execution — it applies on the next dispatch. Saying so here is
+            cheaper than letting the operator infer it from an unchanged
+            result. */}
         <div className="flex flex-wrap items-end gap-2">
-          <Field label="Brain / model" hint={live ? "Berlaku pada dispatch berikutnya, bukan pada run yang sedang berjalan." : undefined}>
+          <Field label="Brain / model" hint={live ? "Applies on the next dispatch, not the currently running execution." : undefined}>
             <Select value={model} onChange={onModel} disabled={busy} className="min-w-[16rem]">
-              <option value="">(ikuti rute kategori/level)</option>
+              <option value="">(follow category/level routing)</option>
               {models.map((m) => (
                 <option key={m.name} value={m.name}>
                   {m.name} — {m.provider}/{m.model}
                   {m.effort ? ` @${m.effort}` : ""}
-                  {m.effortMode === "preference" ? " (effort tidak aktif)" : ""}
+                  {m.effortMode === "preference" ? " (effort not enforced)" : ""}
                 </option>
               ))}
             </Select>
           </Field>
           <Button size="sm" variant="outline" disabled={busy} onClick={() => act(() => semanggi.setModel(task.id, model ? [model] : []))}>
-            Simpan model
+            Save model
           </Button>
         </div>
 
         {!finished ? (
           <details className="rounded-md border border-red-500/30 p-2">
-            <summary className="cursor-pointer text-xs font-medium text-red-600 dark:text-red-300">Batalkan task</summary>
+            <summary className="cursor-pointer text-xs font-medium text-red-600 dark:text-red-300">Cancel task</summary>
             <div className="mt-2 space-y-2">
               <Notice tone="danger">
-                CANCELLED adalah jalan buntu — tidak ada revisi yang bisa mengikutinya. Untuk berhenti sementara, pakai
-                &ldquo;Hentikan&rdquo;.
+                CANCELLED is a dead end — no revision can follow it. To pause temporarily, use &ldquo;Stop&rdquo; instead.
               </Notice>
               <input
                 value={confirmCancel}
                 onChange={(event) => onConfirmCancel(event.target.value)}
-                placeholder={`Ketik ${task.id} untuk mengonfirmasi`}
+                placeholder={`Type ${task.id} to confirm`}
                 className="h-8 w-full rounded-md border border-border bg-background px-2 text-xs outline-none focus:ring-1 focus:ring-ring"
               />
               <Button
                 size="sm"
                 variant="danger"
                 disabled={busy || confirmCancel.trim().toUpperCase() !== task.id.toUpperCase()}
-                onClick={() => act(() => semanggi.cancel(task.id, "dibatalkan lewat halaman Summary"))}
+                onClick={() => act(() => semanggi.cancel(task.id, "cancelled from the Summary page"))}
               >
-                Batalkan permanen
+                Cancel permanently
               </Button>
             </div>
           </details>
@@ -343,15 +342,15 @@ function InfoTab({ detail }: { detail: TaskDetail }) {
   const { task, executions, dependencies } = detail;
   const rows: Array<[string, string]> = [
     ["Project", task.projectId],
-    ["Prioritas", `${task.priority} (efektif ${task.effectivePriority})`],
-    ["Kelas kualitas", task.qualityClass],
+    ["Priority", `${task.priority} (effective ${task.effectivePriority})`],
+    ["Quality class", task.qualityClass],
     ["Worker", task.workerId ?? "—"],
-    ["Workspace", task.workspacePath ?? "(milik project)"],
-    ["Mode workspace", task.workspaceMode],
-    ["Kebijakan sesi", task.sessionPolicy],
+    ["Workspace", task.workspacePath ?? "(project's own)"],
+    ["Workspace mode", task.workspaceMode],
+    ["Session policy", task.sessionPolicy],
     ["Model policy", JSON.stringify(task.modelPolicy)],
-    ["Dibuat", relativeTime(task.createdAt)],
-    ["Diperbarui", relativeTime(task.updatedAt)],
+    ["Created", relativeTime(task.createdAt)],
+    ["Updated", relativeTime(task.updatedAt)],
   ];
   return (
     <div className="space-y-4">
@@ -366,7 +365,7 @@ function InfoTab({ detail }: { detail: TaskDetail }) {
 
       {dependencies.length > 0 ? (
         <div>
-          <div className="mb-1 text-xs font-medium">Menunggu</div>
+          <div className="mb-1 text-xs font-medium">Waiting on</div>
           <div className="flex flex-wrap gap-2">
             {dependencies.map((d) => (
               <Badge key={d.id} tone={d.status === "COMPLETE" ? "success" : "neutral"}>
@@ -378,9 +377,9 @@ function InfoTab({ detail }: { detail: TaskDetail }) {
       ) : null}
 
       <div>
-        <div className="mb-1 text-xs font-medium">Eksekusi</div>
+        <div className="mb-1 text-xs font-medium">Executions</div>
         {executions.length === 0 ? (
-          <Empty>Belum pernah dijalankan.</Empty>
+          <Empty>Never run yet.</Empty>
         ) : (
           <div className="space-y-1">
             {executions.map((e) => (
@@ -388,7 +387,7 @@ function InfoTab({ detail }: { detail: TaskDetail }) {
                 <span className="font-mono">#{e.revisionNo}</span>
                 <Badge tone={statusTone(e.status)}>{e.status}</Badge>
                 <span className="font-mono">{e.model ?? "—"}</span>
-                <span className="text-muted-foreground">{e.tokensBillable.toLocaleString("id-ID")} token</span>
+                <span className="text-muted-foreground">{e.tokensBillable.toLocaleString("en-US")} tokens</span>
                 <span className="text-muted-foreground">{relativeTime(e.endedAt ?? e.startedAt)}</span>
               </div>
             ))}
@@ -397,7 +396,7 @@ function InfoTab({ detail }: { detail: TaskDetail }) {
       </div>
 
       <details>
-        <summary className="cursor-pointer text-xs font-medium">Instruksi</summary>
+        <summary className="cursor-pointer text-xs font-medium">Instructions</summary>
         <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap rounded-md bg-muted p-3 text-xs">{task.description}</pre>
       </details>
     </div>
@@ -405,7 +404,7 @@ function InfoTab({ detail }: { detail: TaskDetail }) {
 }
 
 function Timeline({ events }: { events: WorkEvent[] }) {
-  if (events.length === 0) return <Empty>Belum ada kejadian tercatat.</Empty>;
+  if (events.length === 0) return <Empty>No events recorded yet.</Empty>;
   return (
     <ol className="space-y-1">
       {events.map((e) => (
@@ -423,7 +422,7 @@ function Timeline({ events }: { events: WorkEvent[] }) {
 }
 
 function Transcript({ turns }: { turns: Array<{ role: string; at: number; text: string; revision: number }> }) {
-  if (turns.length === 0) return <Empty>Belum ada percakapan yang terekam.</Empty>;
+  if (turns.length === 0) return <Empty>No transcript recorded yet.</Empty>;
   return (
     <div className="space-y-2">
       {turns.map((t, i) => (

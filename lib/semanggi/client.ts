@@ -138,6 +138,34 @@ export type CatalogModel = {
   availability: string;
 };
 
+export type GatewayModel = {
+  id: string;
+  name?: string;
+  provider: string;
+  reasoning?: boolean;
+  available?: boolean;
+};
+
+export type ThinkingLevelEntry = {
+  provider: string;
+  model: string;
+  levels: string[];
+  effortMode: EffortMode;
+  evidence: string | null;
+  updatedAt: number;
+};
+
+export type BrainTestResult = {
+  ok: boolean;
+  reason?: string;
+  message?: string;
+  status?: string;
+  latencyMs?: number;
+  agentId?: string;
+  thinking?: string | null;
+  error?: string;
+};
+
 export type PlanStep = {
   role: string;
   label: string;
@@ -233,6 +261,13 @@ export const semanggi = {
   brains: () => call<{ brains: Brain[] }>("GET", "work/brains"),
   createBrain: (brain: Partial<Brain>) => call<{ brain: Brain }>("POST", "work/brains", brain),
   updateBrain: (id: string, patch: Partial<Brain>) => call<{ brain: Brain }>("PATCH", `work/brains/${id}`, patch),
+  testBrain: (id: string) => call<BrainTestResult>("POST", `work/brains/${id}/test`, {}),
+  gatewayModels: () => call<{ models: GatewayModel[] }>("GET", "work/gateway/models"),
+  thinkingLevels: (provider?: string, model?: string) => {
+    const q = provider && model ? `?provider=${encodeURIComponent(provider)}&model=${encodeURIComponent(model)}` : "";
+    return call<{ levels: ThinkingLevelEntry[] }>("GET", `work/gateway/thinking-levels${q}`);
+  },
+  refreshThinkingLevels: () => call<{ synced: number; at: number }>("POST", "work/gateway/thinking-levels/refresh", {}),
   roleLevels: () => call<RoleLevels>("GET", "work/role-levels"),
   setRoleLevel: (template: string, role: string, level: Level) =>
     call<unknown>("PUT", "work/role-levels", { template, role, level }),
@@ -252,12 +287,12 @@ export const semanggi = {
 // menunggu sistem, dan mana yang menunggu DIA.
 
 export const COLUMNS = [
-  { id: "stocked", label: "Tertahan", statuses: ["CREATED"] },
-  { id: "queued", label: "Antrian", statuses: ["QUEUED", "RESUMABLE"] },
-  { id: "waiting", label: "Menunggu sistem", statuses: ["WAIT_DEP", "WAIT_WORKSPACE", "WAIT_RESOURCE", "WAIT_QUOTA", "WAIT_CONCURRENCY", "WAIT_WORKER", "WAIT_RUNTIME"] },
-  { id: "attention", label: "Menunggu Anda", statuses: ["WAIT_HUMAN", "BLOCKED", "FAILED"] },
-  { id: "running", label: "Berjalan", statuses: ["DISPATCHED", "RUNNING"] },
-  { id: "done", label: "Selesai", statuses: ["COMPLETE", "CANCELLED"] },
+  { id: "stocked", label: "On hold", statuses: ["CREATED"] },
+  { id: "queued", label: "Queued", statuses: ["QUEUED", "RESUMABLE"] },
+  { id: "waiting", label: "Waiting on system", statuses: ["WAIT_DEP", "WAIT_WORKSPACE", "WAIT_RESOURCE", "WAIT_QUOTA", "WAIT_CONCURRENCY", "WAIT_WORKER", "WAIT_RUNTIME"] },
+  { id: "attention", label: "Needs you", statuses: ["WAIT_HUMAN", "BLOCKED", "FAILED"] },
+  { id: "running", label: "Running", statuses: ["DISPATCHED", "RUNNING"] },
+  { id: "done", label: "Done", statuses: ["COMPLETE", "CANCELLED"] },
 ] as const;
 
 export type ColumnId = (typeof COLUMNS)[number]["id"];
@@ -272,16 +307,17 @@ export function relativeTime(ms: number | null | undefined): string {
   const diff = Date.now() - ms;
   const abs = Math.abs(diff);
   const units: Array<[number, string]> = [
-    [86_400_000, "hari"],
-    [3_600_000, "jam"],
-    [60_000, "menit"],
-    [1000, "detik"],
+    [86_400_000, "day"],
+    [3_600_000, "hour"],
+    [60_000, "minute"],
+    [1000, "second"],
   ];
   for (const [size, name] of units) {
     if (abs >= size) {
       const n = Math.round(abs / size);
-      return diff >= 0 ? `${n} ${name} lalu` : `dalam ${n} ${name}`;
+      const plural = n === 1 ? name : `${name}s`;
+      return diff >= 0 ? `${n} ${plural} ago` : `in ${n} ${plural}`;
     }
   }
-  return "baru saja";
+  return "just now";
 }

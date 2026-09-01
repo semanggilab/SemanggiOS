@@ -2774,7 +2774,7 @@ function SettingsSectionNavigation({
           {settingsSectionGroups.map((group) => (
             <div key={group} className="pt-2 first:pt-0">
               <p className={cn("px-3 pb-1 text-[0.62rem] font-semibold uppercase tracking-[0.14em]", mutedTextClassName(surfaceTheme))}>{group}</p>
-              <div className="grid gap-0.5 sm:grid-cols-2">
+              <div className="grid grid-cols-1 gap-0.5">
                 {settingsSections.filter((section) => section.group === group).map((section) => renderSectionLink(section, true))}
               </div>
             </div>

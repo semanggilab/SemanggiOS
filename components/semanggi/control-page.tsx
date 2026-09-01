@@ -85,19 +85,19 @@ export function ControlPage() {
   return (
     <PageShell
       title="Control"
-      description="Kirim permintaan ke Semanggi. Router intent memutuskan apakah ia percakapan, perintah untuk task yang ada, atau pekerjaan baru yang perlu dipecah."
+      description="Send a request to Semanggi. The intent router decides whether it's a conversation, a command on an existing task, or new work that needs to be decomposed."
     >
       {error ? <LoadError error={error} /> : null}
 
       <Card
-        title="Konteks"
-        subtitle="Menentukan ke mana task hasil dekomposisi difilekan dan bagaimana levelnya dipetakan."
+        title="Context"
+        subtitle="Determines where decomposed tasks are filed and how their levels are resolved."
       >
         <div className="flex flex-wrap gap-4">
           <label className="flex flex-col gap-1">
             <span className="text-xs font-medium">Project</span>
             <Select value={projectId} onChange={setProjectId} className="min-w-[16rem]">
-              {projects.length === 0 ? <option value="">(tidak ada project)</option> : null}
+              {projects.length === 0 ? <option value="">(no projects)</option> : null}
               {projects.map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.name} — {p.id}
@@ -116,7 +116,7 @@ export function ControlPage() {
             </Select>
           </label>
           <label className="flex flex-col gap-1">
-            <span className="text-xs font-medium">Profil</span>
+            <span className="text-xs font-medium">Profile</span>
             <Select value={profile} onChange={setProfile}>
               {PROFILES.map((p) => (
                 <option key={p} value={p}>
@@ -132,9 +132,9 @@ export function ControlPage() {
         <div className="flex-1 space-y-3">
           {messages.length === 0 ? (
             <div className="py-8 text-center text-xs text-muted-foreground">
-              Tulis pekerjaan yang ingin dikerjakan — ia akan dipecah menjadi task per fase.
+              Write the work you want done — it will be decomposed into a task per phase.
               <br />
-              Atau beri perintah pada task yang ada: <code>status TASK-XXXX</code>, <code>stop TASK-XXXX</code>,{" "}
+              Or give a command on an existing task: <code>status TASK-XXXX</code>, <code>stop TASK-XXXX</code>,{" "}
               <code>run TASK-XXXX</code>.
             </div>
           ) : null}
@@ -155,13 +155,13 @@ export function ControlPage() {
       {pendingConfirm ? (
         <Notice tone="warning">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <span>Konfirmasi diperlukan sebelum ini dijalankan.</span>
+            <span>Confirmation is required before this runs.</span>
             <span className="flex gap-2">
               <Button size="sm" variant="danger" disabled={busy} onClick={() => void send(pendingConfirm.text, true)}>
-                Ya, lanjutkan
+                Yes, proceed
               </Button>
               <Button size="sm" variant="outline" onClick={() => setPendingConfirm(null)}>
-                Batal
+                Cancel
               </Button>
             </span>
           </div>
@@ -179,20 +179,20 @@ export function ControlPage() {
           value={text}
           onChange={(event) => setText(event.target.value)}
           onKeyDown={(event) => {
-            // Enter mengirim, Shift+Enter baris baru — permintaan kerja sering
-            // beberapa baris, dan memaksa satu baris membuat orang meringkas
-            // permintaannya sampai kehilangan syarat yang penting.
+            // Enter sends, Shift+Enter inserts a newline — work requests are
+            // often multi-line, and forcing a single line makes people
+            // shorten the request until it loses an important requirement.
             if (event.key === "Enter" && !event.shiftKey) {
               event.preventDefault();
               void send(text);
             }
           }}
           rows={3}
-          placeholder="Contoh: bangun layanan pemesanan dengan NestJS, dengan autentikasi dan katalog produk"
+          placeholder="Example: build an ordering service with NestJS, with authentication and a product catalog"
           className="flex-1 resize-y rounded-md border border-border bg-background p-3 text-sm outline-none focus:ring-1 focus:ring-ring"
         />
         <Button type="submit" disabled={busy || text.trim().length === 0}>
-          {busy ? "Mengirim…" : "Kirim"}
+          {busy ? "Sending…" : "Send"}
         </Button>
       </form>
     </PageShell>
@@ -226,7 +226,7 @@ function PlanTable({ steps, created }: { steps: PlanStep[]; created: boolean }) 
         <thead className="bg-muted/50">
           <tr>
             <th className="px-2 py-1 font-medium">#</th>
-            <th className="px-2 py-1 font-medium">Fase</th>
+            <th className="px-2 py-1 font-medium">Phase</th>
             <th className="px-2 py-1 font-medium">Level</th>
             <th className="px-2 py-1 font-medium">Brain</th>
             <th className="px-2 py-1 font-medium">Mode</th>
@@ -241,7 +241,7 @@ function PlanTable({ steps, created }: { steps: PlanStep[]; created: boolean }) 
                 <div className="font-medium">{step.label}</div>
                 <div className="text-[10px] text-muted-foreground">
                   {step.role}
-                  {step.after.length > 0 ? ` · setelah ${step.after.join(", ")}` : ""}
+                  {step.after.length > 0 ? ` · after ${step.after.join(", ")}` : ""}
                 </div>
               </td>
               <td className="px-2 py-1">
@@ -251,13 +251,14 @@ function PlanTable({ steps, created }: { steps: PlanStep[]; created: boolean }) 
                 {step.brain ? (
                   <span title={step.brainNote ?? undefined}>
                     {step.brain}
-                    {/* `pinned` berarti operator yang memilih; `level` berarti
-                        jatuh dari kandidat. Perbedaannya penting saat hasilnya
-                        mengecewakan dan orang bertanya "siapa yang memilih ini". */}
+                    {/* `pinned` means the operator chose it; `level` means it
+                        fell out of the candidate pool. The distinction matters
+                        when a result disappoints and someone asks "who picked
+                        this". */}
                     <span className="ml-1 text-[10px] text-muted-foreground">({step.brainSource})</span>
                   </span>
                 ) : (
-                  <span className="text-red-600 dark:text-red-300">belum ada</span>
+                  <span className="text-red-600 dark:text-red-300">none yet</span>
                 )}
                 {step.brainNote ? <div className="text-[10px] text-amber-600 dark:text-amber-300">{step.brainNote}</div> : null}
               </td>

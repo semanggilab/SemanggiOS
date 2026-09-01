@@ -1,22 +1,23 @@
-// Halaman Summary Semanggi.
+// Semanggi Summary page.
 //
-// `workspace` diambil dari query string, bukan dari state sidebar AgentOS.
-// Alasannya jujur: pengait workspace aktif milik AgentOS ada di dalam
-// MissionControlShell, dan menebak bentuknya adalah persis kesalahan yang
-// dicatat di D34 — menyimpulkan permukaan hulu dari pembacaan, bukan dari
-// pengukuran. Item nav Semanggi menambahkan `?workspace=<path>` saat sebuah
-// workspace sedang aktif, sehingga filter tetap bekerja hari ini, dan
-// menggantinya dengan pengait asli nanti hanya menyentuh satu baris.
+// Wrapped in AgentOS's own `OperationsShell` so it renders with the same
+// sidebar as every other Operations page, and so its "active workspace"
+// filter comes from the real thing AgentOS tracks (`context.activeWorkspace`)
+// rather than a `?workspace=<path>` query-string stand-in. The stand-in was a
+// stopgap for exactly this — see the previous version of this file — and is
+// removed now that the real hook is being used.
 
-import { SummaryPage } from "@/components/semanggi/summary-page";
+import { OperationsShell } from "@/components/operations/operations-shell";
+import { getInitialControlPlaneSnapshot } from "@/lib/agentos/initial-snapshot";
+import { SummaryPage as SemanggiSummaryPage } from "@/components/semanggi/summary-page";
 
 export const dynamic = "force-dynamic";
 
-export default async function Page({
-  searchParams,
-}: {
-  searchParams: Promise<{ workspace?: string }>;
-}) {
-  const { workspace } = await searchParams;
-  return <SummaryPage activeWorkspacePath={workspace ?? null} />;
+export default async function Page() {
+  const snapshot = await getInitialControlPlaneSnapshot();
+  return (
+    <OperationsShell initialSnapshot={snapshot}>
+      {(context) => <SemanggiSummaryPage activeWorkspacePath={context.activeWorkspace?.path ?? null} />}
+    </OperationsShell>
+  );
 }

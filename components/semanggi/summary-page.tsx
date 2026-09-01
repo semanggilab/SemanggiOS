@@ -73,13 +73,15 @@ export function SummaryPage({ activeWorkspacePath }: { activeWorkspacePath?: str
   }, []);
 
   /**
-   * Filter workspace.
+   * Workspace filter.
    *
-   * Project Semanggi dikenali lewat `workspacePath`, dan workspace aktif
-   * AgentOS juga sebuah path — jadi pencocokannya adalah prefiks path, bukan id
-   * bersama. Itu bukan pilihan desain melainkan konsekuensi: Semanggi belum
-   * menyinkronkan project dari AgentOS (tugas discovery masih terbuka), jadi
-   * satu-satunya hal yang benar-benar dimiliki keduanya adalah letak berkas.
+   * Semanggi projects are identified by `workspacePath`, and AgentOS's active
+   * workspace is also a path — so the match is a path prefix, not a shared id.
+   * That's a consequence, not a design choice: Semanggi hasn't yet synced
+   * projects from AgentOS (the discovery task is still open), so the one
+   * thing both genuinely share is where the files live. `activeWorkspacePath`
+   * now comes from AgentOS's real `OperationsShellContext.activeWorkspace`,
+   * passed down from `app/summary/page.tsx` — no more `?workspace=` hack.
    */
   const visibleProjects = useMemo(() => {
     if (scope === "all" || !activeWorkspacePath) return projects;
@@ -108,15 +110,15 @@ export function SummaryPage({ activeWorkspacePath }: { activeWorkspacePath?: str
   return (
     <PageShell
       title="Summary"
-      description="Kartu ringkasan dan papan kerja per project. Kolom mengikuti kosakata operator, bukan kosakata mesin state."
+      description="Summary cards and a per-project work board. Columns follow the operator's vocabulary, not the state machine's."
       actions={
         <>
           <Select value={scope} onChange={setScope}>
-            <option value="workspace">Workspace aktif</option>
-            <option value="all">Semua project</option>
+            <option value="workspace">Active workspace</option>
+            <option value="all">All projects</option>
           </Select>
           <Button variant="outline" size="sm" onClick={() => void load()}>
-            Muat ulang
+            Reload
           </Button>
         </>
       }
@@ -126,8 +128,8 @@ export function SummaryPage({ activeWorkspacePath }: { activeWorkspacePath?: str
       {!error && !loading && visibleProjects.length === 0 ? (
         <Empty>
           {scope === "workspace" && activeWorkspacePath
-            ? "Tidak ada project Semanggi pada workspace ini. Pilih “Semua project” untuk melihat sisanya."
-            : "Belum ada project di controller."}
+            ? "No Semanggi projects for this workspace. Choose “All projects” to see the rest."
+            : "No projects in the controller yet."}
         </Empty>
       ) : null}
 
@@ -158,12 +160,12 @@ function ProjectCards({ project }: { project: ProjectSummary }) {
   // karena hanya satu dari keduanya yang bisa diselesaikan hari ini oleh orang
   // yang sedang melihat layar.
   const cards: Array<{ label: string; value: string | number; tone?: "warning" | "info"; hint?: string }> = [
-    { label: "Total task", value: project.taskCount },
-    { label: "Berjalan", value: project.phase.running, tone: "info" },
-    { label: "Antrian", value: project.phase.queued },
-    { label: "Menunggu sistem", value: project.phase.waiting, hint: "kuota, lease, ketergantungan" },
-    { label: "Menunggu Anda", value: project.phase.needsAttention, tone: "warning", hint: "persetujuan, blokir, gagal" },
-    { label: "Token terpakai", value: project.tokens.toLocaleString("id-ID"), hint: `${project.runs} run` },
+    { label: "Total tasks", value: project.taskCount },
+    { label: "Running", value: project.phase.running, tone: "info" },
+    { label: "Queued", value: project.phase.queued },
+    { label: "Waiting on system", value: project.phase.waiting, hint: "quota, lease, dependencies" },
+    { label: "Needs you", value: project.phase.needsAttention, tone: "warning", hint: "approvals, blocked, failed" },
+    { label: "Tokens used", value: project.tokens.toLocaleString("en-US"), hint: `${project.runs} run(s)` },
   ];
 
   return (
@@ -172,10 +174,10 @@ function ProjectCards({ project }: { project: ProjectSummary }) {
         <span className="flex items-center gap-2">
           {project.name}
           <code className="rounded bg-muted px-1.5 py-0.5 text-[11px] font-normal">{project.id}</code>
-          {project.needsAttention > 0 ? <Badge tone="warning">{project.needsAttention} butuh perhatian</Badge> : null}
+          {project.needsAttention > 0 ? <Badge tone="warning">{project.needsAttention} need attention</Badge> : null}
         </span>
       }
-      subtitle={`${project.workspacePath ?? "tanpa workspace"} · aktivitas terakhir ${relativeTime(project.lastActivityAt)}`}
+      subtitle={`${project.workspacePath ?? "no workspace"} · last activity ${relativeTime(project.lastActivityAt)}`}
     >
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
         {cards.map((c) => (
@@ -245,7 +247,7 @@ function Board({
             {!isCollapsed ? (
               <div className="space-y-2 px-2 pb-2">
                 {list.length === 0 ? (
-                  <div className="px-1 py-3 text-center text-[11px] text-muted-foreground">kosong</div>
+                  <div className="px-1 py-3 text-center text-[11px] text-muted-foreground">empty</div>
                 ) : (
                   list.map((task) => <TaskCard key={task.id} task={task} onOpen={onOpen} />)
                 )}
@@ -266,7 +268,7 @@ function TaskCard({ task, onOpen }: { task: Task; onOpen: (taskId: string) => vo
     >
       <div className="flex items-center justify-between gap-2">
         <code className="text-[10px] text-muted-foreground">{task.id}</code>
-        {task.expedited ? <Badge tone="warning">cepat</Badge> : null}
+        {task.expedited ? <Badge tone="warning">expedited</Badge> : null}
       </div>
       <div className="mt-1 line-clamp-2 text-xs font-medium">{task.title}</div>
       <div className="mt-1.5 flex flex-wrap items-center gap-1">

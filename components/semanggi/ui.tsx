@@ -9,7 +9,7 @@
 // hulu. Yang ditiru adalah bahasa visualnya (kartu, lencana status, toolbar),
 // bukan kodenya.
 
-import { type ReactNode } from "react";
+import { useEffect, useId, type ReactNode } from "react";
 
 export function PageShell({
   title,
@@ -132,6 +132,100 @@ export function Button({
   );
 }
 
+/**
+ * Small modal dialog, used for Add/Edit Brain.
+ *
+ * A dedicated primitive rather than reusing `TaskDialog`'s inline markup: that
+ * one is built around a task's specific tabs and controls, and forcing a form
+ * dialog through the same shape would couple two things that change for
+ * different reasons.
+ */
+export function Modal({
+  title,
+  subtitle,
+  onClose,
+  children,
+  width = "max-w-2xl",
+}: {
+  title: ReactNode;
+  subtitle?: ReactNode;
+  onClose: () => void;
+  children: ReactNode;
+  width?: string;
+}) {
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/50 p-4 sm:p-8" onClick={onClose}>
+      <div
+        className={`w-full ${width} rounded-xl border border-border bg-background shadow-xl`}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-4 border-b border-border px-5 py-4">
+          <div>
+            <h2 className="text-lg font-semibold">{title}</h2>
+            {subtitle ? <p className="mt-1 text-xs text-muted-foreground">{subtitle}</p> : null}
+          </div>
+          <Button variant="ghost" size="sm" onClick={onClose}>
+            Close
+          </Button>
+        </div>
+        <div className="px-5 py-4">{children}</div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Text input with dropdown suggestions the user can still override by typing.
+ *
+ * Provider and model are exactly this shape: the gateway only reports models
+ * it currently has onboarded (`GET .../gateway/models`), which is a small,
+ * live-changing subset of everything a Brain could reasonably point at (an
+ * ACP provider like `claude-code`, or a provider not onboarded yet). A strict
+ * `<select>` would make those impossible to enter; a plain `<input>` would
+ * lose the convenience of picking from what's known. `<input list>` gives
+ * both without inventing a new widget.
+ */
+export function Combobox({
+  value,
+  onChange,
+  options,
+  placeholder,
+  disabled,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  options: string[];
+  placeholder?: string;
+  disabled?: boolean;
+}) {
+  const listId = useId();
+  return (
+    <>
+      <input
+        list={listId}
+        value={value}
+        disabled={disabled}
+        placeholder={placeholder}
+        onChange={(event) => onChange(event.target.value)}
+        className="h-8 w-full rounded-md border border-border bg-background px-2 text-xs outline-none focus:ring-1 focus:ring-ring disabled:opacity-50"
+      />
+      <datalist id={listId}>
+        {options.map((option) => (
+          <option key={option} value={option} />
+        ))}
+      </datalist>
+    </>
+  );
+}
+
 export function Select({
   value,
   onChange,
@@ -176,11 +270,11 @@ export function Empty({ children }: { children: ReactNode }) {
 }
 
 /**
- * Kegagalan muat ditampilkan, tidak disembunyikan.
+ * Load failures are shown, not hidden.
  *
- * Layar kosong karena controller tidak terjangkau dan layar kosong karena tidak
- * ada pekerjaan terlihat sama persis bagi operator — dan keduanya menuntun ke
- * tindakan yang berbeda.
+ * An empty screen because the controller is unreachable and an empty screen
+ * because there's simply no work look identical to an operator — and each
+ * one calls for a different next step.
  */
 export function LoadError({ error, onRetry }: { error: string; onRetry?: () => void }) {
   return (
@@ -189,7 +283,7 @@ export function LoadError({ error, onRetry }: { error: string; onRetry?: () => v
         <span>{error}</span>
         {onRetry ? (
           <Button size="sm" variant="outline" onClick={onRetry}>
-            Coba lagi
+            Retry
           </Button>
         ) : null}
       </div>

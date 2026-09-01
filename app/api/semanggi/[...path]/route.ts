@@ -55,7 +55,10 @@ const ALLOWED: Array<{ method: string; pattern: RegExp }> = [
   { method: "POST", pattern: /^work\/approvals\/[A-Za-z0-9_-]+\/(decide|comment)$/ },
   { method: "POST", pattern: /^work\/(brains|control\/message|routing\/preview)$/ },
   { method: "PATCH", pattern: /^work\/brains\/[A-Za-z0-9_-]+$/ },
+  { method: "POST", pattern: /^work\/brains\/[A-Za-z0-9_-]+\/test$/ },
   { method: "PUT", pattern: /^work\/(role-levels|brain-map)$/ },
+  { method: "GET", pattern: /^work\/gateway\/(models|thinking-levels)$/ },
+  { method: "POST", pattern: /^work\/gateway\/thinking-levels\/refresh$/ },
 ];
 
 let cachedToken: string | null = null;
