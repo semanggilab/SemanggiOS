@@ -129,7 +129,14 @@ export function TaskDialog({
             <ApprovalPanel
               approvals={pendingApprovals}
               busy={busy}
-              onDecide={(id, decision, note) => act(() => semanggi.decide(id, decision, note))}
+              onDecide={(id, decision, note) =>
+                // ApprovalRow only ever offers options straight from the
+                // approval's own `options` list with COMMENT filtered out —
+                // "APPROVE"/"REJECT"/"MODIFY" is what's actually possible
+                // here, `decision` is just typed as `string` one level up so
+                // ApprovalPanel doesn't need to know that union.
+                act(() => semanggi.decide(id, decision as "APPROVE" | "REJECT" | "MODIFY", note))
+              }
             />
           ) : null}
 
