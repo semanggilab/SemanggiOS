@@ -1,6 +1,11 @@
 "use client";
 
 import Link from "next/link";
+import {
+  SemanggiBrainsPanel,
+  SemanggiBrainMapPanel,
+  SemanggiRoleMapPanel
+} from "@/components/semanggi/settings-panels";
 import type { LucideIcon } from "lucide-react";
 import {
   Activity,
@@ -18,6 +23,7 @@ import {
   HelpCircle,
   KeyRound,
   Layers,
+  Share2,
   ListChecks,
   LoaderCircle,
   Microscope,
@@ -32,6 +38,7 @@ import {
   Star,
   Target,
   TerminalSquare,
+  Users,
   Trash2,
   TriangleAlert,
   Wrench,
@@ -131,6 +138,9 @@ type SettingsSectionId =
   | "models"
   | "workspace"
   | "agents"
+  | "semanggi-brains"
+  | "semanggi-role-map"
+  | "semanggi-brain-map"
   | "diagnostics"
   | "advanced"
   | "danger-zone";
@@ -139,7 +149,7 @@ type SettingsSection = {
   id: SettingsSectionId;
   label: string;
   icon: LucideIcon;
-  group: "Core" | "OpenClaw" | "Workspace" | "System";
+  group: "Core" | "OpenClaw" | "Workspace" | "Semanggi" | "System";
   destructive?: boolean;
 };
 
@@ -152,12 +162,15 @@ const settingsSections: SettingsSection[] = [
   { id: "models", label: "Models", icon: Box, group: "OpenClaw" },
   { id: "workspace", label: "Workspace", icon: Folder, group: "Workspace" },
   { id: "agents", label: "Agents", icon: Bot, group: "Workspace" },
+  { id: "semanggi-brains", label: "Brain", icon: Layers, group: "Semanggi" },
+  { id: "semanggi-role-map", label: "Role Map", icon: Users, group: "Semanggi" },
+  { id: "semanggi-brain-map", label: "Brain Map", icon: Share2, group: "Semanggi" },
   { id: "diagnostics", label: "Diagnostics", icon: TerminalSquare, group: "System" },
   { id: "advanced", label: "Advanced", icon: Settings2, group: "System" },
   { id: "danger-zone", label: "Danger Zone", icon: AlertTriangle, group: "System", destructive: true }
 ];
 
-const settingsSectionGroups = ["Core", "OpenClaw", "Workspace", "System"] as const;
+const settingsSectionGroups = ["Core", "OpenClaw", "Workspace", "Semanggi", "System"] as const;
 
 const relatedSettingsSections: Record<SettingsSectionId, SettingsSectionId[]> = {
   general: ["gateway", "capabilities", "agents"],
@@ -168,6 +181,9 @@ const relatedSettingsSections: Record<SettingsSectionId, SettingsSectionId[]> = 
   models: ["gateway", "workspace", "agents"],
   workspace: ["models", "agents", "diagnostics"],
   agents: ["workspace", "models", "diagnostics"],
+  "semanggi-brains": ["semanggi-role-map", "semanggi-brain-map", "models"],
+  "semanggi-role-map": ["semanggi-brain-map", "semanggi-brains", "agents"],
+  "semanggi-brain-map": ["semanggi-brains", "semanggi-role-map", "agents"],
   diagnostics: ["gateway", "capabilities", "advanced"],
   advanced: ["diagnostics", "openclaw", "danger-zone"],
   "danger-zone": ["advanced", "diagnostics", "openclaw"]
@@ -2157,6 +2173,24 @@ export function SettingsControlCenter(
                     Refresh models
                   </Button>
                 </Card>
+              </section>
+              ) : null}
+
+              {renderedActiveSection === "semanggi-brains" ? (
+              <section id="semanggi-brains" className="scroll-mt-24">
+                <SemanggiBrainsPanel />
+              </section>
+              ) : null}
+
+              {renderedActiveSection === "semanggi-role-map" ? (
+              <section id="semanggi-role-map" className="scroll-mt-24">
+                <SemanggiRoleMapPanel />
+              </section>
+              ) : null}
+
+              {renderedActiveSection === "semanggi-brain-map" ? (
+              <section id="semanggi-brain-map" className="scroll-mt-24">
+                <SemanggiBrainMapPanel />
               </section>
               ) : null}
 
@@ -6216,6 +6250,12 @@ function resolveHashSettingsSection(): SettingsSectionId {
       return "workspace";
     case "agents":
       return "agents";
+    case "semanggi-brains":
+      return "semanggi-brains";
+    case "semanggi-role-map":
+      return "semanggi-role-map";
+    case "semanggi-brain-map":
+      return "semanggi-brain-map";
     case "diagnostics":
       return "diagnostics";
     case "advanced":

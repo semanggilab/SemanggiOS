@@ -14,6 +14,8 @@ import {
   ChevronDown,
   ChevronRight,
   ClipboardList,
+  LayoutList,
+  MessageSquare,
   Cpu,
   Download,
   FileText,
@@ -120,7 +122,7 @@ type AgentDraft = {
   channelIds: string[];
 };
 
-type SidebarSection = "overview" | "operations" | "system";
+type SidebarSection = "overview" | "semanggi" | "operations" | "system";
 
 type SidebarItem = {
   label: string;
@@ -179,6 +181,7 @@ type MissionSidebarProps = {
 
 const sidebarSections: Array<{ id: SidebarSection; label: string }> = [
   { id: "overview", label: "Overview" },
+  { id: "semanggi", label: "Semanggi" },
   { id: "operations", label: "Operations" },
   { id: "system", label: "System" }
 ];
@@ -186,6 +189,8 @@ const sidebarSections: Array<{ id: SidebarSection; label: string }> = [
 const sidebarItems: SidebarItem[] = [
   { label: "Mission Control", href: "/", icon: Gauge, section: "overview" },
   { label: "Dashboard", href: "/dashboard", icon: Inbox, section: "overview" },
+  { label: "Summary", href: "/summary", icon: LayoutList, section: "semanggi" },
+  { label: "Control", href: "/control", icon: MessageSquare, section: "semanggi" },
   { label: "Agents", href: "/agents", icon: Bot, section: "operations" },
   { label: "Operations", href: "/operations", icon: Activity, section: "operations" },
   { label: "Tasks", href: "/tasks", icon: ClipboardList, section: "operations" },

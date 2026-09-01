@@ -1,0 +1,283 @@
+"use client";
+
+// Halaman Summary: kartu ringkasan di atas, kanban per project di bawah.
+//
+// KENAPA KANBAN-NYA PER PROJECT, BUKAN SATU ANTRIAN DATAR
+//
+// Antrian datar menjawab pertanyaan penjadwal ("apa berikutnya?"). Operator
+// menanyakan hal lain: "project saya sedang di mana?". Menggabungkan semua
+// project dalam satu papan membuat dua project yang tidak saling berhubungan
+// terlihat seperti satu aliran kerja, dan kolom "Menunggu Anda" kehilangan
+// artinya — menunggu Anda, pada project yang mana?
+//
+// KENAPA KOLOMNYA ACCORDION VERTIKAL
+//
+// Enam kolom × N project tidak muat di layar mana pun. Melipat kolom yang
+// kosong (dan kolom yang tidak sedang dilihat) membuat papan tetap terbaca
+// tanpa menyembunyikan bahwa kolom itu ada — nol yang terlihat adalah
+// informasi, kolom yang hilang bukan.
+
+import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  COLUMNS,
+  columnFor,
+  relativeTime,
+  semanggi,
+  type CatalogModel,
+  type ColumnId,
+  type ProjectSummary,
+  type Task,
+} from "@/lib/semanggi/client";
+import { Badge, Button, Card, Empty, LoadError, PageShell, Select, statusTone } from "./ui";
+import { TaskDialog } from "./task-dialog";
+
+const REFRESH_MS = 15_000;
+
+/** Kolom yang terlipat secara bawaan: yang jarang butuh perhatian harian. */
+const COLLAPSED_BY_DEFAULT: ColumnId[] = ["done"];
+
+export function SummaryPage({ activeWorkspacePath }: { activeWorkspacePath?: string | null }) {
+  const [projects, setProjects] = useState<ProjectSummary[]>([]);
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [models, setModels] = useState<CatalogModel[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [openTask, setOpenTask] = useState<string | null>(null);
+  const [scope, setScope] = useState<string>("workspace");
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+
+  const load = useCallback(async () => {
+    try {
+      setError(null);
+      const [summary, taskList] = await Promise.all([semanggi.projectSummary(), semanggi.tasks()]);
+      setProjects(summary.projects);
+      setTasks(taskList.tasks);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+    const timer = setInterval(() => void load(), REFRESH_MS);
+    return () => clearInterval(timer);
+  }, [load]);
+
+  useEffect(() => {
+    semanggi
+      .models()
+      .then((m) => setModels(m.models))
+      .catch(() => setModels([]));
+  }, []);
+
+  /**
+   * Filter workspace.
+   *
+   * Project Semanggi dikenali lewat `workspacePath`, dan workspace aktif
+   * AgentOS juga sebuah path — jadi pencocokannya adalah prefiks path, bukan id
+   * bersama. Itu bukan pilihan desain melainkan konsekuensi: Semanggi belum
+   * menyinkronkan project dari AgentOS (tugas discovery masih terbuka), jadi
+   * satu-satunya hal yang benar-benar dimiliki keduanya adalah letak berkas.
+   */
+  const visibleProjects = useMemo(() => {
+    if (scope === "all" || !activeWorkspacePath) return projects;
+    return projects.filter(
+      (p) => p.workspacePath && (p.workspacePath === activeWorkspacePath || p.workspacePath.startsWith(`${activeWorkspacePath}/`)),
+    );
+  }, [projects, scope, activeWorkspacePath]);
+
+  const tasksByProject = useMemo(() => {
+    const map = new Map<string, Task[]>();
+    for (const task of tasks) {
+      const list = map.get(task.projectId) ?? [];
+      list.push(task);
+      map.set(task.projectId, list);
+    }
+    return map;
+  }, [tasks]);
+
+  const toggle = (projectId: string, column: ColumnId) =>
+    setCollapsed((prev) => {
+      const key = `${projectId}:${column}`;
+      const isCollapsed = prev[key] ?? COLLAPSED_BY_DEFAULT.includes(column);
+      return { ...prev, [key]: !isCollapsed };
+    });
+
+  return (
+    <PageShell
+      title="Summary"
+      description="Kartu ringkasan dan papan kerja per project. Kolom mengikuti kosakata operator, bukan kosakata mesin state."
+      actions={
+        <>
+          <Select value={scope} onChange={setScope}>
+            <option value="workspace">Workspace aktif</option>
+            <option value="all">Semua project</option>
+          </Select>
+          <Button variant="outline" size="sm" onClick={() => void load()}>
+            Muat ulang
+          </Button>
+        </>
+      }
+    >
+      {error ? <LoadError error={error} onRetry={load} /> : null}
+
+      {!error && !loading && visibleProjects.length === 0 ? (
+        <Empty>
+          {scope === "workspace" && activeWorkspacePath
+            ? "Tidak ada project Semanggi pada workspace ini. Pilih “Semua project” untuk melihat sisanya."
+            : "Belum ada project di controller."}
+        </Empty>
+      ) : null}
+
+      <div className="space-y-8">
+        {visibleProjects.map((project) => (
+          <div key={project.id} className="space-y-3">
+            <ProjectCards project={project} />
+            <Board
+              project={project}
+              tasks={tasksByProject.get(project.id) ?? []}
+              collapsed={collapsed}
+              onToggle={toggle}
+              onOpen={setOpenTask}
+            />
+          </div>
+        ))}
+      </div>
+
+      {openTask ? (
+        <TaskDialog taskId={openTask} models={models} onClose={() => setOpenTask(null)} onChanged={() => void load()} />
+      ) : null}
+    </PageShell>
+  );
+}
+
+function ProjectCards({ project }: { project: ProjectSummary }) {
+  // "Menunggu Anda" dipisahkan dari "menunggu sistem" di kartu paling atas,
+  // karena hanya satu dari keduanya yang bisa diselesaikan hari ini oleh orang
+  // yang sedang melihat layar.
+  const cards: Array<{ label: string; value: string | number; tone?: "warning" | "info"; hint?: string }> = [
+    { label: "Total task", value: project.taskCount },
+    { label: "Berjalan", value: project.phase.running, tone: "info" },
+    { label: "Antrian", value: project.phase.queued },
+    { label: "Menunggu sistem", value: project.phase.waiting, hint: "kuota, lease, ketergantungan" },
+    { label: "Menunggu Anda", value: project.phase.needsAttention, tone: "warning", hint: "persetujuan, blokir, gagal" },
+    { label: "Token terpakai", value: project.tokens.toLocaleString("id-ID"), hint: `${project.runs} run` },
+  ];
+
+  return (
+    <Card
+      title={
+        <span className="flex items-center gap-2">
+          {project.name}
+          <code className="rounded bg-muted px-1.5 py-0.5 text-[11px] font-normal">{project.id}</code>
+          {project.needsAttention > 0 ? <Badge tone="warning">{project.needsAttention} butuh perhatian</Badge> : null}
+        </span>
+      }
+      subtitle={`${project.workspacePath ?? "tanpa workspace"} · aktivitas terakhir ${relativeTime(project.lastActivityAt)}`}
+    >
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+        {cards.map((c) => (
+          <div key={c.label} className="rounded-lg border border-border px-3 py-2">
+            <div className="text-[11px] text-muted-foreground">{c.label}</div>
+            <div
+              className={`text-xl font-semibold ${
+                c.tone === "warning" && Number(c.value) > 0
+                  ? "text-amber-600 dark:text-amber-300"
+                  : c.tone === "info" && Number(c.value) > 0
+                    ? "text-sky-600 dark:text-sky-300"
+                    : ""
+              }`}
+            >
+              {c.value}
+            </div>
+            {c.hint ? <div className="text-[10px] text-muted-foreground">{c.hint}</div> : null}
+          </div>
+        ))}
+      </div>
+    </Card>
+  );
+}
+
+function Board({
+  project,
+  tasks,
+  collapsed,
+  onToggle,
+  onOpen,
+}: {
+  project: ProjectSummary;
+  tasks: Task[];
+  collapsed: Record<string, boolean>;
+  onToggle: (projectId: string, column: ColumnId) => void;
+  onOpen: (taskId: string) => void;
+}) {
+  const grouped = useMemo(() => {
+    const map = new Map<ColumnId, Task[]>();
+    for (const column of COLUMNS) map.set(column.id, []);
+    for (const task of tasks) map.get(columnFor(task.status))!.push(task);
+    for (const list of map.values()) {
+      list.sort((a, b) => b.effectivePriority - a.effectivePriority || b.updatedAt - a.updatedAt);
+    }
+    return map;
+  }, [tasks]);
+
+  return (
+    <div className="grid gap-3 lg:grid-cols-3 xl:grid-cols-6">
+      {COLUMNS.map((column) => {
+        const list = grouped.get(column.id) ?? [];
+        const key = `${project.id}:${column.id}`;
+        const isCollapsed = collapsed[key] ?? COLLAPSED_BY_DEFAULT.includes(column.id);
+        return (
+          <div key={column.id} className="rounded-lg border border-border bg-muted/30">
+            <button
+              onClick={() => onToggle(project.id, column.id)}
+              className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left"
+              aria-expanded={!isCollapsed}
+            >
+              <span className="flex items-center gap-2 text-xs font-medium">
+                <span className={`transition-transform ${isCollapsed ? "" : "rotate-90"}`}>›</span>
+                {column.label}
+              </span>
+              <Badge tone={column.id === "attention" && list.length > 0 ? "warning" : "neutral"}>{list.length}</Badge>
+            </button>
+            {!isCollapsed ? (
+              <div className="space-y-2 px-2 pb-2">
+                {list.length === 0 ? (
+                  <div className="px-1 py-3 text-center text-[11px] text-muted-foreground">kosong</div>
+                ) : (
+                  list.map((task) => <TaskCard key={task.id} task={task} onOpen={onOpen} />)
+                )}
+              </div>
+            ) : null}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function TaskCard({ task, onOpen }: { task: Task; onOpen: (taskId: string) => void }) {
+  return (
+    <button
+      onClick={() => onOpen(task.id)}
+      className="w-full rounded-md border border-border bg-background px-2 py-2 text-left transition-colors hover:border-primary/50 hover:bg-accent"
+    >
+      <div className="flex items-center justify-between gap-2">
+        <code className="text-[10px] text-muted-foreground">{task.id}</code>
+        {task.expedited ? <Badge tone="warning">cepat</Badge> : null}
+      </div>
+      <div className="mt-1 line-clamp-2 text-xs font-medium">{task.title}</div>
+      <div className="mt-1.5 flex flex-wrap items-center gap-1">
+        <Badge tone={statusTone(task.status)}>{task.status}</Badge>
+        <Badge tone="neutral">{task.qualityClass}</Badge>
+      </div>
+      {task.waitReason ? (
+        <div className="mt-1 line-clamp-2 text-[10px] text-muted-foreground" title={task.waitReason}>
+          {task.waitReason}
+        </div>
+      ) : null}
+    </button>
+  );
+}
