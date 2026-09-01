@@ -1,15 +1,18 @@
 "use client";
 
-// Three Semanggi settings panels: Brain, Role Map, Brain Map.
+// Four Semanggi settings panels: Project, Role Map, Brains, Brain Map.
 //
 // Each answers a different question, in order:
 //
-//   Brain      "which (model + effort) combinations do we have?"
+//   Project    "what template and profile does this project decompose with?"
 //   Role Map   "how expensive is each role allowed to think?"
+//   Brains     "which (model + effort) combinations do we have?"
 //   Brain Map  "at that level, which Brain for this role?"
 //
-// The order isn't taste: Brain Map can't be filled in before Brains exist, and
-// its level has no meaning before Role Map is set.
+// Project comes first because the other three only matter once a project
+// exists to apply them to. Brain Map can't be filled in before Brains exist,
+// and its level has no meaning before Role Map is set — so those two keep
+// their original relative order.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
@@ -19,11 +22,13 @@ import {
   type CatalogModel,
   type GatewayModel,
   type Level,
+  type Profile,
   type ThinkingLevelEntry,
 } from "@/lib/semanggi/client";
 import { Badge, Button, Card, Combobox, Empty, Field, LoadError, Modal, Notice, Select } from "./ui";
 
 const LEVELS: Level[] = ["low", "normal", "critical"];
+const PROFILES: Profile[] = ["fast", "balanced", "quality"];
 
 function useAsync<T>(fn: () => Promise<T>, deps: unknown[] = []) {
   const [data, setData] = useState<T | null>(null);
@@ -46,6 +51,117 @@ function useAsync<T>(fn: () => Promise<T>, deps: unknown[] = []) {
     void run();
   }, [run]);
   return { data, error, loading, reload: run };
+}
+
+// --- Project -------------------------------------------------------------------
+
+const PROFILE_HINT: Record<Profile, string> = {
+  fast: "Cheaper, quicker phases — use for small or low-stakes work.",
+  balanced: "The default: normal-level phases unless a role's template default says otherwise.",
+  quality: "Every phase without a template default runs at the critical level.",
+};
+
+function ProjectRow({
+  project,
+  busy,
+  onSave,
+}: {
+  project: { id: string; name: string; workspacePath: string | null; template: string; profile: Profile };
+  busy: boolean;
+  onSave: (id: string, profile: Profile) => Promise<void>;
+}) {
+  const [profile, setProfile] = useState<Profile>(project.profile);
+  const [saving, setSaving] = useState(false);
+  const dirty = profile !== project.profile;
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await onSave(project.id, profile);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/50 py-2">
+      <div className="min-w-0">
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-medium">{project.name}</span>
+          <code className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">{project.id}</code>
+          <Badge tone="neutral">{project.template}</Badge>
+        </div>
+        <div className="truncate text-[10px] text-muted-foreground">{project.workspacePath ?? "—"}</div>
+      </div>
+      <div className="flex items-center gap-2">
+        <Select value={profile} onChange={(v) => setProfile(v as Profile)} disabled={busy || saving}>
+          {PROFILES.map((p) => (
+            <option key={p} value={p}>
+              {p}
+            </option>
+          ))}
+        </Select>
+        <Button size="sm" disabled={busy || saving || !dirty} onClick={save}>
+          {saving ? "Saving…" : "Save"}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Project settings: template and profile move here from the Control page
+ * (D37). Any team member can change a project's profile — the shared-token
+ * attribution (§8.4) means every action from this UI is already one identity,
+ * so there is no separate operator/admin gate to enforce here.
+ *
+ * Template is shown but not editable from this panel: it isn't synced from
+ * AgentOS's own project template yet (that discovery task is still open), so
+ * changing it here would be editing a value this UI doesn't actually own.
+ */
+export function SemanggiProjectsPanel() {
+  const { data, error, reload } = useAsync(() => semanggi.projects(), []);
+  const [busy, setBusy] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  const save = async (id: string, profile: Profile) => {
+    setBusy(true);
+    setSaveError(null);
+    try {
+      await semanggi.updateProjectSettings(id, { profile });
+      await reload();
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      {error ? <LoadError error={error} onRetry={reload} /> : null}
+      {saveError ? <Notice tone="danger">{saveError}</Notice> : null}
+
+      <Notice tone="info">
+        Profile sets the default thinking level for every phase a WORK request creates in that project, unless a role
+        has its own template default (see Role Map) or an operator overrides it per task.
+        {" "}
+        {PROFILES.map((p) => `${p}: ${PROFILE_HINT[p]}`).join(" ")}
+      </Notice>
+
+      <Card title="Project" subtitle="Sets the default decomposition profile for every WORK request in this project.">
+        {!data || data.projects.length === 0 ? (
+          <Empty>No projects yet.</Empty>
+        ) : (
+          <div>
+            {data.projects.map((project) => (
+              <ProjectRow key={project.id} project={project} busy={busy} onSave={save} />
+            ))}
+          </div>
+        )}
+      </Card>
+    </div>
+  );
 }
 
 // --- Brain -------------------------------------------------------------------

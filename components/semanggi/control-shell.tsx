@@ -13,5 +13,9 @@ import { OperationsShell } from "@/components/operations/operations-shell";
 import { ControlPage } from "./control-page";
 
 export function SemanggiControlShell({ initialSnapshot }: { initialSnapshot: MissionControlSnapshot }) {
-  return <OperationsShell initialSnapshot={initialSnapshot}>{() => <ControlPage />}</OperationsShell>;
+  return (
+    <OperationsShell initialSnapshot={initialSnapshot}>
+      {(context) => <ControlPage activeWorkspacePath={context.activeWorkspace?.path ?? null} />}
+    </OperationsShell>
+  );
 }

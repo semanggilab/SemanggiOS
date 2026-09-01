@@ -33,8 +33,14 @@ import { TaskDialog } from "./task-dialog";
 
 const REFRESH_MS = 15_000;
 
-/** Kolom yang terlipat secara bawaan: yang jarang butuh perhatian harian. */
-const COLLAPSED_BY_DEFAULT: ColumnId[] = ["done"];
+/**
+ * Up to this many task cards show before a column scrolls instead of
+ * growing. A board with six columns across several projects has to stay
+ * scannable — an "attention" column with thirty tasks would otherwise push
+ * every other project off the screen.
+ */
+const MAX_VISIBLE_TASKS = 5;
+const TASK_CARD_HEIGHT_REM = 4.75; // ~one card including its gap
 
 export function SummaryPage({ activeWorkspacePath }: { activeWorkspacePath?: string | null }) {
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
@@ -100,12 +106,13 @@ export function SummaryPage({ activeWorkspacePath }: { activeWorkspacePath?: str
     return map;
   }, [tasks]);
 
-  const toggle = (projectId: string, column: ColumnId) =>
-    setCollapsed((prev) => {
-      const key = `${projectId}:${column}`;
-      const isCollapsed = prev[key] ?? COLLAPSED_BY_DEFAULT.includes(column);
-      return { ...prev, [key]: !isCollapsed };
-    });
+  // Explicit toggles are sticky (kept in `collapsed`); a column with no
+  // manual toggle yet defaults to collapsed exactly when it's empty — an
+  // empty column carries no information worth the vertical space, and one
+  // that gains its first task should open on its own rather than stay
+  // folded because of a toggle nobody set.
+  const toggle = (projectId: string, column: ColumnId, currentlyCollapsed: boolean) =>
+    setCollapsed((prev) => ({ ...prev, [`${projectId}:${column}`]: !currentlyCollapsed }));
 
   return (
     <PageShell
@@ -114,7 +121,7 @@ export function SummaryPage({ activeWorkspacePath }: { activeWorkspacePath?: str
       actions={
         <>
           <Select value={scope} onChange={setScope}>
-            <option value="workspace">Active workspace</option>
+            <option value="workspace">Active Project</option>
             <option value="all">All projects</option>
           </Select>
           <Button variant="outline" size="sm" onClick={() => void load()}>
@@ -212,7 +219,7 @@ function Board({
   project: ProjectSummary;
   tasks: Task[];
   collapsed: Record<string, boolean>;
-  onToggle: (projectId: string, column: ColumnId) => void;
+  onToggle: (projectId: string, column: ColumnId, currentlyCollapsed: boolean) => void;
   onOpen: (taskId: string) => void;
 }) {
   const grouped = useMemo(() => {
@@ -230,11 +237,11 @@ function Board({
       {COLUMNS.map((column) => {
         const list = grouped.get(column.id) ?? [];
         const key = `${project.id}:${column.id}`;
-        const isCollapsed = collapsed[key] ?? COLLAPSED_BY_DEFAULT.includes(column.id);
+        const isCollapsed = collapsed[key] ?? list.length === 0;
         return (
           <div key={column.id} className="rounded-lg border border-border bg-muted/30">
             <button
-              onClick={() => onToggle(project.id, column.id)}
+              onClick={() => onToggle(project.id, column.id, isCollapsed)}
               className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left"
               aria-expanded={!isCollapsed}
             >
@@ -245,7 +252,10 @@ function Board({
               <Badge tone={column.id === "attention" && list.length > 0 ? "warning" : "neutral"}>{list.length}</Badge>
             </button>
             {!isCollapsed ? (
-              <div className="space-y-2 px-2 pb-2">
+              <div
+                className="space-y-2 overflow-y-auto px-2 pb-2"
+                style={list.length > MAX_VISIBLE_TASKS ? { maxHeight: `${MAX_VISIBLE_TASKS * TASK_CARD_HEIGHT_REM}rem` } : undefined}
+              >
                 {list.length === 0 ? (
                   <div className="px-1 py-3 text-center text-[11px] text-muted-foreground">empty</div>
                 ) : (

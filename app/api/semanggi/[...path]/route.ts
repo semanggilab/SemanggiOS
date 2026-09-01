@@ -57,6 +57,7 @@ const ALLOWED: Array<{ method: string; pattern: RegExp }> = [
   { method: "PATCH", pattern: /^work\/brains\/[A-Za-z0-9_-]+$/ },
   { method: "POST", pattern: /^work\/brains\/[A-Za-z0-9_-]+\/test$/ },
   { method: "PUT", pattern: /^work\/(role-levels|brain-map)$/ },
+  { method: "PATCH", pattern: /^work\/projects\/[A-Za-z0-9_-]+$/ },
   { method: "GET", pattern: /^work\/gateway\/(models|thinking-levels)$/ },
   { method: "POST", pattern: /^work\/gateway\/thinking-levels\/refresh$/ },
 ];

@@ -128,6 +128,20 @@ export type ProjectSummary = {
   needsAttention: number;
 };
 
+export type Profile = "fast" | "balanced" | "quality";
+
+// D37: template and profile are the project's own setting now — typed once
+// in Settings → Project rather than re-typed on every Control page request.
+export type ProjectSettings = {
+  id: string;
+  name: string;
+  weight: number;
+  status: string;
+  workspacePath: string | null;
+  template: string;
+  profile: Profile;
+};
+
 export type CatalogModel = {
   name: string;
   provider: string;
@@ -230,6 +244,9 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
 
 export const semanggi = {
   projectSummary: () => call<{ projects: ProjectSummary[]; generatedAt: number }>("GET", "work/projects/summary"),
+  projects: () => call<{ projects: ProjectSettings[] }>("GET", "work/projects"),
+  updateProjectSettings: (id: string, patch: { template?: string; profile?: Profile }) =>
+    call<{ project: ProjectSettings }>("PATCH", `work/projects/${id}`, patch),
   tasks: (params: { project?: string; status?: string } = {}) => {
     const q = new URLSearchParams();
     if (params.project) q.set("project", params.project);
@@ -254,7 +271,7 @@ export const semanggi = {
     call<{ task: Task }>("PATCH", `work/tasks/${id}`, { modelPolicy: { preferred } }),
   rerun: (id: string, sessionMode: "CONTINUE" | "FORK" | "FRESH", instruction = "") =>
     call<{ task: Task }>("POST", `work/tasks/${id}/revisions`, { sessionMode, instruction }),
-  decide: (approvalId: string, decision: "APPROVE" | "REJECT", note?: string) =>
+  decide: (approvalId: string, decision: "APPROVE" | "REJECT" | "MODIFY", note?: string) =>
     call<{ approval: Approval }>("POST", `work/approvals/${approvalId}/decide`, { decision, note }),
 
   models: () => call<{ models: CatalogModel[] }>("GET", "work/models"),
@@ -300,6 +317,19 @@ export type ColumnId = (typeof COLUMNS)[number]["id"];
 export function columnFor(status: string): ColumnId {
   const hit = COLUMNS.find((c) => (c.statuses as readonly string[]).includes(status));
   return hit?.id ?? "waiting";
+}
+
+// The mount contract puts every task workspace under this prefix (see
+// assertWorkspacePath in the controller). It's structural, not content — an
+// operator reading a path wants to know which project/branch/worktree they're
+// looking at, not confirm the mount point for the tenth time today.
+const WORKSPACE_PREFIX = "/opt/semanggi/volumes/shared/service/openclaw";
+
+export function shortenWorkspacePath(path: string | null | undefined): string {
+  if (!path) return "—";
+  if (path === WORKSPACE_PREFIX) return "/";
+  if (path.startsWith(`${WORKSPACE_PREFIX}/`)) return `…/${path.slice(WORKSPACE_PREFIX.length + 1)}`;
+  return path;
 }
 
 export function relativeTime(ms: number | null | undefined): string {

@@ -1,27 +1,35 @@
 "use client";
 
-// Halaman Control: satu kolom percakapan yang dirutekan menurut intent.
+// Control page: a single conversation column routed by intent.
 //
-// APA YANG DILAKUKAN HALAMAN INI, DAN APA YANG TIDAK
+// WHAT THIS PAGE DOES, AND WHAT IT DOESN'T
 //
-// Ia mengirim teks dan menampilkan apa yang controller putuskan. Ia TIDAK
-// mengklasifikasikan sendiri, tidak menebak project, dan tidak memutuskan
-// apakah sesuatu destruktif — semua itu milik controller, dan menduplikasinya
-// di sini akan menghasilkan dua permukaan yang menyimpang diam-diam begitu
-// salah satunya diubah.
+// It sends text and displays what the controller decided. It does NOT
+// classify anything itself, does NOT guess the project, and does NOT decide
+// whether something is destructive — all of that belongs to the controller,
+// and duplicating it here would produce two surfaces that quietly diverge
+// the moment one of them changes.
 //
-// TIGA JALUR YANG TERLIHAT BERBEDA, SENGAJA
+// TEMPLATE AND PROFILE AREN'T PICKED HERE ANYMORE (D37)
 //
-//   CHAT     balasan biasa
-//   TASK     perintah pada task yang sudah ada; verba destruktif menuntut
-//            konfirmasi eksplisit, dan konfirmasinya menyebut apa yang berhenti
-//   WORK     dipecah menjadi beberapa task; rencananya ditampilkan sebagai
-//            daftar berurut, bukan sebagai paragraf
+// They used to be a "Context" card re-filled on every request. Both are now
+// a project's own setting (Settings → Project), chosen once when the project
+// is set up rather than every time someone opens this page. What's left to
+// pick per request is which project the work belongs to — the "Active
+// Project" dropdown, top-right, matching the one on Summary.
 //
-// CONFIRM bukan kegagalan. Ia adalah aturan §8.2 yang bekerja: klasifikasi yang
-// tidak yakin menjadi pertanyaan, tidak pernah menjadi aksi.
+// THREE PATHS THAT LOOK DIFFERENT, DELIBERATELY
+//
+//   CHAT     an ordinary reply
+//   TASK     a command on an existing task; a destructive verb demands
+//            explicit confirmation, and the confirmation names what stops
+//   WORK     split into several tasks; the plan is shown as an ordered list,
+//            not as a paragraph
+//
+// CONFIRM is not a failure. It's §8.2's rule doing its job: a classification
+// the router isn't sure about becomes a question, never an action.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { semanggi, type ControlReply, type PlanStep, type ProjectSummary } from "@/lib/semanggi/client";
 import { Badge, Button, Card, LoadError, Notice, PageShell, Select } from "./ui";
 
@@ -29,34 +37,57 @@ type Message =
   | { kind: "operator"; text: string; at: number }
   | { kind: "system"; reply: ControlReply; at: number };
 
-const TEMPLATES = ["software", "backend", "frontend", "research", "content"];
-const PROFILES = ["balanced", "fast", "quality"];
+const MIN_ROWS = 1;
+const MAX_TEXTAREA_PX = 200;
 
-export function ControlPage() {
+export function ControlPage({ activeWorkspacePath }: { activeWorkspacePath?: string | null }) {
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [projectId, setProjectId] = useState("");
-  const [template, setTemplate] = useState("software");
-  const [profile, setProfile] = useState("balanced");
   const [text, setText] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pendingConfirm, setPendingConfirm] = useState<{ text: string; target: string } | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     semanggi
       .projectSummary()
-      .then((s) => {
-        setProjects(s.projects);
-        setProjectId((current) => current || (s.projects[0]?.id ?? ""));
-      })
+      .then((s) => setProjects(s.projects))
       .catch((err) => setError(err instanceof Error ? err.message : String(err)));
   }, []);
+
+  // Defaults to whichever project's workspace matches AgentOS's active
+  // workspace — the same prefix match Summary uses, and for the same reason
+  // (§ workspace filter note there): Semanggi hasn't synced projects from
+  // AgentOS yet, so a path is the one thing both sides actually share. Falls
+  // back to the first project once results arrive if nothing matches, so the
+  // dropdown is never left empty when at least one project exists.
+  useEffect(() => {
+    if (projectId || projects.length === 0) return;
+    const match = activeWorkspacePath
+      ? projects.find(
+          (p) => p.workspacePath && (p.workspacePath === activeWorkspacePath || p.workspacePath.startsWith(`${activeWorkspacePath}/`)),
+        )
+      : null;
+    setProjectId((match ?? projects[0]).id);
+  }, [projects, activeWorkspacePath, projectId]);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  // Grows with content up to MAX_TEXTAREA_PX, then scrolls — a chat box that
+  // just keeps growing eventually pushes the send button off screen.
+  useLayoutEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, MAX_TEXTAREA_PX)}px`;
+  }, [text]);
+
+  const activeProject = useMemo(() => projects.find((p) => p.id === projectId) ?? null, [projects, projectId]);
 
   const send = async (raw: string, confirm = false) => {
     const value = raw.trim();
@@ -68,8 +99,6 @@ export function ControlPage() {
       const reply = await semanggi.control({
         text: value,
         projectId: projectId || undefined,
-        template,
-        profile,
         confirm,
       });
       setMessages((prev) => [...prev, { kind: "system", reply, at: Date.now() }]);
@@ -86,47 +115,32 @@ export function ControlPage() {
     <PageShell
       title="Control"
       description="Send a request to Semanggi. The intent router decides whether it's a conversation, a command on an existing task, or new work that needs to be decomposed."
+      actions={
+        <label className="flex items-center gap-2 text-xs">
+          <span className="font-medium text-muted-foreground">Active Project</span>
+          <Select value={projectId} onChange={setProjectId} className="min-w-[12rem]">
+            {projects.length === 0 ? <option value="">(no projects)</option> : null}
+            {projects.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </Select>
+        </label>
+      }
     >
       {error ? <LoadError error={error} /> : null}
 
-      <Card
-        title="Context"
-        subtitle="Determines where decomposed tasks are filed and how their levels are resolved."
-      >
-        <div className="flex flex-wrap gap-4">
-          <label className="flex flex-col gap-1">
-            <span className="text-xs font-medium">Project</span>
-            <Select value={projectId} onChange={setProjectId} className="min-w-[16rem]">
-              {projects.length === 0 ? <option value="">(no projects)</option> : null}
-              {projects.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name} — {p.id}
-                </option>
-              ))}
-            </Select>
-          </label>
-          <label className="flex flex-col gap-1">
-            <span className="text-xs font-medium">Template</span>
-            <Select value={template} onChange={setTemplate}>
-              {TEMPLATES.map((t) => (
-                <option key={t} value={t}>
-                  {t}
-                </option>
-              ))}
-            </Select>
-          </label>
-          <label className="flex flex-col gap-1">
-            <span className="text-xs font-medium">Profile</span>
-            <Select value={profile} onChange={setProfile}>
-              {PROFILES.map((p) => (
-                <option key={p} value={p}>
-                  {p}
-                </option>
-              ))}
-            </Select>
-          </label>
-        </div>
-      </Card>
+      {activeProject ? (
+        <p className="text-xs text-muted-foreground">
+          Decomposing into <span className="font-medium text-foreground">{activeProject.name}</span> using that
+          project&rsquo;s own template and profile — change those in{" "}
+          <a href="/settings#semanggi-projects" className="underline underline-offset-2">
+            Settings → Project
+          </a>
+          .
+        </p>
+      ) : null}
 
       <Card className="flex min-h-[24rem] flex-col">
         <div className="flex-1 space-y-3">
@@ -173,9 +187,10 @@ export function ControlPage() {
           event.preventDefault();
           void send(text);
         }}
-        className="flex gap-2"
+        className="flex items-end gap-2 rounded-2xl border border-border bg-background p-2 shadow-sm focus-within:ring-1 focus-within:ring-ring"
       >
         <textarea
+          ref={textareaRef}
           value={text}
           onChange={(event) => setText(event.target.value)}
           onKeyDown={(event) => {
@@ -187,11 +202,11 @@ export function ControlPage() {
               void send(text);
             }
           }}
-          rows={3}
-          placeholder="Example: build an ordering service with NestJS, with authentication and a product catalog"
-          className="flex-1 resize-y rounded-md border border-border bg-background p-3 text-sm outline-none focus:ring-1 focus:ring-ring"
+          rows={MIN_ROWS}
+          placeholder="Message Semanggi…"
+          className="max-h-[200px] flex-1 resize-none border-0 bg-transparent px-2 py-1.5 text-sm outline-none focus:ring-0"
         />
-        <Button type="submit" disabled={busy || text.trim().length === 0}>
+        <Button type="submit" size="sm" disabled={busy || text.trim().length === 0}>
           {busy ? "Sending…" : "Send"}
         </Button>
       </form>

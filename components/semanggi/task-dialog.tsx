@@ -13,6 +13,7 @@ import { useCallback, useEffect, useState } from "react";
 import {
   semanggi,
   relativeTime,
+  shortenWorkspacePath,
   type Approval,
   type CatalogModel,
   type Task,
@@ -20,6 +21,8 @@ import {
   type WorkEvent,
 } from "@/lib/semanggi/client";
 import { Badge, Button, Card, Empty, Field, LoadError, Notice, Select, statusTone } from "./ui";
+
+const FINISHED_STATUSES = new Set(["COMPLETE", "CANCELLED"]);
 
 type Tab = "info" | "timeline" | "transcript";
 
@@ -123,7 +126,11 @@ export function TaskDialog({
           {error ? <LoadError error={error} onRetry={load} /> : null}
 
           {pendingApprovals.length > 0 ? (
-            <ApprovalPanel approvals={pendingApprovals} busy={busy} onDecide={(id, d, note) => act(() => semanggi.decide(id, d, note))} />
+            <ApprovalPanel
+              approvals={pendingApprovals}
+              busy={busy}
+              onDecide={(id, decision, note) => act(() => semanggi.decide(id, decision, note))}
+            />
           ) : null}
 
           {task ? (
@@ -163,37 +170,63 @@ export function TaskDialog({
           {tab === "timeline" ? <Timeline events={events} /> : null}
           {tab === "transcript" ? <Transcript turns={turns} /> : null}
 
-          <Card title="Comments">
-            <div className="flex flex-col gap-2">
-              <textarea
-                value={comment}
-                onChange={(event) => setComment(event.target.value)}
-                rows={3}
-                placeholder="A note for this task — stored in the append-only log and shown in the timeline."
-                className="w-full resize-y rounded-md border border-border bg-background p-2 text-sm outline-none focus:ring-1 focus:ring-ring"
-              />
-              <div className="flex justify-end">
-                <Button
-                  size="sm"
-                  disabled={busy || comment.trim().length === 0}
-                  onClick={() =>
-                    act(async () => {
-                      await semanggi.comment(taskId, comment.trim());
-                      setComment("");
-                    })
-                  }
-                >
-                  Send comment
-                </Button>
+          {/* Once a task is COMPLETE or CANCELLED there is nothing left an
+              operator can still do to it, and a comment box that's still
+              live for a dead-end task invites notes that read as
+              instructions nobody will ever act on. The timeline in the
+              Timeline tab still shows every comment that was made while it
+              mattered. */}
+          {task && !FINISHED_STATUSES.has(task.status) ? (
+            <Card title="Comments">
+              <div className="flex flex-col gap-2">
+                <textarea
+                  value={comment}
+                  onChange={(event) => setComment(event.target.value)}
+                  rows={3}
+                  placeholder="A note for this task — stored in the append-only log and shown in the timeline."
+                  className="w-full resize-y rounded-md border border-border bg-background p-2 text-sm outline-none focus:ring-1 focus:ring-ring"
+                />
+                <div className="flex justify-end">
+                  <Button
+                    size="sm"
+                    disabled={busy || comment.trim().length === 0}
+                    onClick={() =>
+                      act(async () => {
+                        await semanggi.comment(taskId, comment.trim());
+                        setComment("");
+                      })
+                    }
+                  >
+                    Send comment
+                  </Button>
+                </div>
               </div>
-            </div>
-          </Card>
+            </Card>
+          ) : null}
         </div>
       </div>
     </div>
   );
 }
 
+const DECISION_LABEL: Record<string, string> = {
+  APPROVE: "Approve",
+  REJECT: "Reject",
+  MODIFY: "Request changes",
+};
+
+/**
+ * One row per pending approval, with buttons built from `a.options` rather
+ * than a fixed Approve/Reject pair.
+ *
+ * Every approval the controller creates offers MODIFY alongside
+ * APPROVE/REJECT (see approvals.create in the controller), but until now
+ * this panel only ever rendered two hardcoded buttons — so the one decision
+ * that requires the operator to actually explain what should change was
+ * present in the data and invisible in the UI. MODIFY blocks the task the
+ * same way REJECT does; the note is the only record of *why*, which is why
+ * it's required rather than optional for that one option.
+ */
 function ApprovalPanel({
   approvals,
   busy,
@@ -201,36 +234,66 @@ function ApprovalPanel({
 }: {
   approvals: Approval[];
   busy: boolean;
-  onDecide: (id: string, decision: "APPROVE" | "REJECT", note?: string) => void;
+  onDecide: (id: string, decision: string, note?: string) => void;
 }) {
-  const [note, setNote] = useState("");
   return (
     <Card title="Needs your decision" className="border-amber-500/40">
-      <div className="space-y-3">
+      <div className="space-y-4">
         {approvals.map((a) => (
-          <div key={a.id} className="space-y-2">
-            <div className="flex items-center gap-2">
-              <Badge tone="warning">{a.level}</Badge>
-              <span className="text-sm">{a.question}</span>
-            </div>
-            <input
-              value={note}
-              onChange={(event) => setNote(event.target.value)}
-              placeholder="Note (optional, stored with the decision)"
-              className="h-8 w-full rounded-md border border-border bg-background px-2 text-xs outline-none focus:ring-1 focus:ring-ring"
-            />
-            <div className="flex gap-2">
-              <Button size="sm" disabled={busy} onClick={() => onDecide(a.id, "APPROVE", note || undefined)}>
-                Approve
-              </Button>
-              <Button size="sm" variant="danger" disabled={busy} onClick={() => onDecide(a.id, "REJECT", note || undefined)}>
-                Reject
-              </Button>
-            </div>
-          </div>
+          <ApprovalRow key={a.id} approval={a} busy={busy} onDecide={onDecide} />
         ))}
       </div>
     </Card>
+  );
+}
+
+function ApprovalRow({
+  approval,
+  busy,
+  onDecide,
+}: {
+  approval: Approval;
+  busy: boolean;
+  onDecide: (id: string, decision: string, note?: string) => void;
+}) {
+  const [note, setNote] = useState("");
+  const decidable = approval.options.filter((o) => o !== "COMMENT");
+  const modifyOffered = decidable.includes("MODIFY");
+  const modifyBlocked = modifyOffered && note.trim().length === 0;
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-2">
+        <Badge tone="warning">{approval.level}</Badge>
+        <span className="text-sm">{approval.question}</span>
+      </div>
+      <input
+        value={note}
+        onChange={(event) => setNote(event.target.value)}
+        placeholder={
+          modifyOffered ? "What should change? Required for “Request changes”." : "Note (optional, stored with the decision)"
+        }
+        className="h-8 w-full rounded-md border border-border bg-background px-2 text-xs outline-none focus:ring-1 focus:ring-ring"
+      />
+      <div className="flex flex-wrap gap-2">
+        {decidable.map((option) => {
+          const variant = option === "APPROVE" ? "default" : option === "REJECT" ? "danger" : "outline";
+          const disabled = busy || (option === "MODIFY" && modifyBlocked);
+          return (
+            <Button
+              key={option}
+              size="sm"
+              variant={variant}
+              disabled={disabled}
+              title={option === "MODIFY" && modifyBlocked ? "Describe what should change first" : undefined}
+              onClick={() => onDecide(approval.id, option, note || undefined)}
+            >
+              {DECISION_LABEL[option] ?? option}
+            </Button>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
@@ -340,12 +403,16 @@ function Controls({
 
 function InfoTab({ detail }: { detail: TaskDetail }) {
   const { task, executions, dependencies } = detail;
-  const rows: Array<[string, string]> = [
+  const rows: Array<[string, string, string?]> = [
     ["Project", task.projectId],
     ["Priority", `${task.priority} (effective ${task.effectivePriority})`],
     ["Quality class", task.qualityClass],
     ["Worker", task.workerId ?? "—"],
-    ["Workspace", task.workspacePath ?? "(project's own)"],
+    [
+      "Workspace",
+      task.workspacePath ? shortenWorkspacePath(task.workspacePath) : "(project's own)",
+      task.workspacePath ?? undefined,
+    ],
     ["Workspace mode", task.workspaceMode],
     ["Session policy", task.sessionPolicy],
     ["Model policy", JSON.stringify(task.modelPolicy)],
@@ -355,10 +422,12 @@ function InfoTab({ detail }: { detail: TaskDetail }) {
   return (
     <div className="space-y-4">
       <div className="grid gap-x-6 gap-y-1 sm:grid-cols-2">
-        {rows.map(([k, v]) => (
+        {rows.map(([k, v, full]) => (
           <div key={k} className="flex justify-between gap-3 border-b border-border/50 py-1 text-xs">
             <span className="text-muted-foreground">{k}</span>
-            <span className="truncate text-right font-mono">{v}</span>
+            <span className="truncate text-right font-mono" title={full}>
+              {v}
+            </span>
           </div>
         ))}
       </div>
