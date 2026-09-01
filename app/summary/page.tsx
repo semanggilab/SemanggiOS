@@ -3,21 +3,21 @@
 // Wrapped in AgentOS's own `OperationsShell` so it renders with the same
 // sidebar as every other Operations page, and so its "active workspace"
 // filter comes from the real thing AgentOS tracks (`context.activeWorkspace`)
-// rather than a `?workspace=<path>` query-string stand-in. The stand-in was a
-// stopgap for exactly this — see the previous version of this file — and is
-// removed now that the real hook is being used.
+// rather than a `?workspace=<path>` query-string stand-in.
+//
+// This file itself is a Server Component (it awaits the `server-only`
+// `getInitialControlPlaneSnapshot()`), so it cannot hand `OperationsShell`'s
+// render-prop `children` function directly — functions can't cross the
+// server/client boundary as props. `SemanggiSummaryShell` is the Client
+// Component that owns that render function; this page only fetches the
+// snapshot and passes it down as plain data.
 
-import { OperationsShell } from "@/components/operations/operations-shell";
 import { getInitialControlPlaneSnapshot } from "@/lib/agentos/initial-snapshot";
-import { SummaryPage as SemanggiSummaryPage } from "@/components/semanggi/summary-page";
+import { SemanggiSummaryShell } from "@/components/semanggi/summary-shell";
 
 export const dynamic = "force-dynamic";
 
 export default async function Page() {
   const snapshot = await getInitialControlPlaneSnapshot();
-  return (
-    <OperationsShell initialSnapshot={snapshot}>
-      {(context) => <SemanggiSummaryPage activeWorkspacePath={context.activeWorkspace?.path ?? null} />}
-    </OperationsShell>
-  );
+  return <SemanggiSummaryShell initialSnapshot={snapshot} />;
 }
