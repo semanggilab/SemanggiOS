@@ -36,23 +36,81 @@ export function PageShell({
   );
 }
 
+/**
+ * 12-color accent palette + hash, copied in spirit (not in code — see the
+ * file header) from AgentOS's own `lib/openclaw/workspace-colors.ts`, which
+ * gives each workspace node on the Mission Control canvas a stable color by
+ * hashing its id. Same shape here: a project id always resolves to the same
+ * one of 12 accents, so a project's color is recognizable at a glance across
+ * a page reload rather than reshuffling.
+ */
+const PROJECT_ACCENT_PALETTE = [
+  "34, 211, 238",
+  "59, 130, 246",
+  "99, 102, 241",
+  "139, 92, 246",
+  "168, 85, 247",
+  "236, 72, 153",
+  "244, 63, 94",
+  "249, 115, 22",
+  "245, 158, 11",
+  "34, 197, 94",
+  "20, 184, 166",
+  "14, 165, 233",
+] as const;
+
+function hashString(value: string) {
+  let hash = 0;
+  for (let index = 0; index < value.length; index += 1) hash = (hash * 31 + value.charCodeAt(index)) | 0;
+  return Math.abs(hash);
+}
+
+export function getProjectAccentRgb(projectId: string) {
+  const seed = projectId.trim() || projectId;
+  return PROJECT_ACCENT_PALETTE[hashString(seed) % PROJECT_ACCENT_PALETTE.length];
+}
+
 export function Card({
   title,
   subtitle,
   actions,
   children,
   className = "",
+  accentRgb,
 }: {
   title?: ReactNode;
   subtitle?: ReactNode;
   actions?: ReactNode;
   children: ReactNode;
   className?: string;
+  // When set, the card takes on the translucent, blurred "cockpit" surface
+  // used elsewhere in Mission Control (Settings' own panels, the Dashboard's
+  // stat cards) instead of the flat default, tinted by this color — see
+  // `getProjectAccentRgb`. Left unset, every existing caller (Brains, Role
+  // Map, Brain Map, Settings' Project panel) keeps today's flat `bg-card`
+  // look untouched.
+  accentRgb?: string;
 }) {
+  const surface = accentRgb
+    ? "border-transparent bg-card/95 shadow-[0_16px_40px_rgba(0,0,0,0.10)] backdrop-blur-xl"
+    : "border-border bg-card shadow-sm";
   return (
-    <section className={`rounded-xl border border-border bg-card text-card-foreground shadow-sm ${className}`}>
+    <section
+      className={`rounded-xl border text-card-foreground ${surface} ${className}`}
+      style={
+        accentRgb
+          ? {
+              borderColor: `rgba(${accentRgb}, 0.35)`,
+              backgroundImage: `radial-gradient(circle at 12% 0%, rgba(${accentRgb}, 0.14), transparent 45%), radial-gradient(circle at 92% 100%, rgba(${accentRgb}, 0.08), transparent 42%)`,
+            }
+          : undefined
+      }
+    >
       {title || actions ? (
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
+        <div
+          className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3"
+          style={accentRgb ? { borderColor: `rgba(${accentRgb}, 0.22)` } : undefined}
+        >
           <div>
             <div className="text-sm font-medium">{title}</div>
             {subtitle ? <div className="text-xs text-muted-foreground">{subtitle}</div> : null}
@@ -75,9 +133,17 @@ const TONE_CLASS: Record<Tone, string> = {
   danger: "bg-red-500/10 text-red-600 border-red-500/30 dark:text-red-300",
 };
 
-export function Badge({ tone = "neutral", children }: { tone?: Tone; children: ReactNode }) {
+export function Badge({
+  tone = "neutral",
+  children,
+  title,
+}: {
+  tone?: Tone;
+  children: ReactNode;
+  title?: string;
+}) {
   return (
-    <span className={`inline-flex items-center rounded-md border px-2 py-0.5 text-xs font-medium ${TONE_CLASS[tone]}`}>
+    <span title={title} className={`inline-flex items-center rounded-md border px-2 py-0.5 text-xs font-medium ${TONE_CLASS[tone]}`}>
       {children}
     </span>
   );
@@ -107,14 +173,16 @@ export function Button({
   disabled,
   title,
   type = "button",
+  className,
 }: {
   children: ReactNode;
   onClick?: () => void;
-  variant?: "default" | "outline" | "ghost" | "danger";
+  variant?: "default" | "outline" | "ghost" | "danger" | "link";
   size?: "sm" | "md";
   disabled?: boolean;
   title?: string;
   type?: "button" | "submit";
+  className?: string;
 }) {
   const base =
     "inline-flex items-center justify-center gap-1.5 rounded-md font-medium transition-colors disabled:pointer-events-none disabled:opacity-50";
@@ -124,9 +192,21 @@ export function Button({
     outline: "border border-border bg-transparent hover:bg-accent hover:text-accent-foreground",
     ghost: "bg-transparent hover:bg-accent hover:text-accent-foreground",
     danger: "border border-red-500/40 bg-red-500/10 text-red-600 hover:bg-red-500/20 dark:text-red-300",
+    // Plain text, like a link — no border, no fill. Deliberately carries no
+    // text color of its own (unlike the other variants): a row of these next
+    // to each other (Edit / Disable / Test) needs one to turn green or amber
+    // on a result without a baked-in color fighting that override, so every
+    // caller supplies its own `text-*` via `className` instead.
+    link: "bg-transparent hover:underline underline-offset-2",
   };
   return (
-    <button type={type} title={title} onClick={onClick} disabled={disabled} className={`${base} ${sizes[size]} ${variants[variant]}`}>
+    <button
+      type={type}
+      title={title}
+      onClick={onClick}
+      disabled={disabled}
+      className={`${base} ${sizes[size]} ${variants[variant]}${className ? ` ${className}` : ""}`}
+    >
       {children}
     </button>
   );
@@ -251,9 +331,19 @@ export function Select({
   );
 }
 
-export function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
+export function Field({
+  label,
+  hint,
+  children,
+  className,
+}: {
+  label: string;
+  hint?: string;
+  children: ReactNode;
+  className?: string;
+}) {
   return (
-    <label className="flex flex-col gap-1">
+    <label className={`flex flex-col gap-1${className ? ` ${className}` : ""}`}>
       <span className="text-xs font-medium">{label}</span>
       {children}
       {hint ? <span className="text-[11px] text-muted-foreground">{hint}</span> : null}

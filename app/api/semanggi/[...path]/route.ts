@@ -53,13 +53,17 @@ const ALLOWED: Array<{ method: string; pattern: RegExp }> = [
   { method: "POST", pattern: /^work\/tasks\/[A-Za-z0-9_-]+\/(start|stop|cancel|expedite|comments|revisions)$/ },
   { method: "PATCH", pattern: /^work\/tasks\/[A-Za-z0-9_-]+$/ },
   { method: "POST", pattern: /^work\/approvals\/[A-Za-z0-9_-]+\/(decide|comment)$/ },
-  { method: "POST", pattern: /^work\/(brains|control\/message|routing\/preview)$/ },
+  { method: "POST", pattern: /^work\/(projects|brains|control\/message|routing\/preview)$/ },
   { method: "PATCH", pattern: /^work\/brains\/[A-Za-z0-9_-]+$/ },
   { method: "POST", pattern: /^work\/brains\/[A-Za-z0-9_-]+\/test$/ },
+  { method: "POST", pattern: /^work\/brains\/test$/ },
   { method: "PUT", pattern: /^work\/(role-levels|brain-map)$/ },
   { method: "PATCH", pattern: /^work\/projects\/[A-Za-z0-9_-]+$/ },
   { method: "GET", pattern: /^work\/gateway\/(models|thinking-levels)$/ },
+  { method: "POST", pattern: /^work\/gateway\/models\/refresh$/ },
   { method: "POST", pattern: /^work\/gateway\/thinking-levels\/refresh$/ },
+  { method: "POST", pattern: /^work\/gateway\/thinking-levels\/probe$/ },
+  { method: "GET", pattern: /^work\/gateway\/thinking-levels\/probe\/status$/ },
 ];
 
 let cachedToken: string | null = null;

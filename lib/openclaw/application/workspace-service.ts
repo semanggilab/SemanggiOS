@@ -1,7 +1,6 @@
 import "server-only";
 
 import { access, readFile, rename, rm } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 
 import {
@@ -1082,8 +1081,17 @@ function isSnapshotModelUsable(snapshot: MissionControlSnapshot, modelId: string
   return model.missing !== true && model.available !== false;
 }
 
+// Semanggi divergence: upstream's fallback (`~/Documents/Shared/projects`)
+// assumes a desktop HOME a human actually uses. In the Swarm container HOME
+// is `/home/node`, which has no such folder and nothing ever writes there —
+// every real workspace on this cluster already lives on the shared NFS mount
+// at the path below (see CLAUDE.md §3/§5.1). Falling back to it means a
+// fresh operator who never set Settings → Workspace Root still lands
+// somewhere real instead of a directory that silently doesn't exist.
+const SEMANGGI_DEFAULT_WORKSPACE_ROOT = "/opt/semanggi/volumes/shared/service/openclaw/workspaces";
+
 function resolveWorkspaceRoot(configuredWorkspaceRoot?: string | null) {
-  return configuredWorkspaceRoot || path.join(os.homedir(), "Documents", "Shared", "projects");
+  return configuredWorkspaceRoot || SEMANGGI_DEFAULT_WORKSPACE_ROOT;
 }
 
 function isObjectRecord(value: unknown): value is Record<string, unknown> {

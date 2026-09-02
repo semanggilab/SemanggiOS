@@ -15,20 +15,28 @@
 // their original relative order.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { MessageSquare } from "lucide-react";
 import {
   semanggi,
   type Brain,
   type BrainMap,
+  type BrainTestResult,
   type CatalogModel,
   type GatewayModel,
   type Level,
   type Profile,
   type ThinkingLevelEntry,
+  type ThinkingProbeSample,
+  type ThinkingProbeStatus,
 } from "@/lib/semanggi/client";
 import { Badge, Button, Card, Combobox, Empty, Field, LoadError, Modal, Notice, Select } from "./ui";
 
 const LEVELS: Level[] = ["low", "normal", "critical"];
 const PROFILES: Profile[] = ["fast", "balanced", "quality"];
+
+// Mirrors CANDIDATE_LEVELS in thinking-probe.mjs — used only to show
+// progress ("3/7 levels probed"), never to decide what gets sent.
+const PROBE_CANDIDATE_LEVELS = ["off", "minimal", "low", "medium", "high", "max", "adaptive"];
 
 function useAsync<T>(fn: () => Promise<T>, deps: unknown[] = []) {
   const [data, setData] = useState<T | null>(null);
@@ -60,6 +68,45 @@ const PROFILE_HINT: Record<Profile, string> = {
   balanced: "The default: normal-level phases unless a role's template default says otherwise.",
   quality: "Every phase without a template default runs at the critical level.",
 };
+
+/**
+ * "Register to Semanggi" — the other direction of task #4's discovery work
+ * (still open): until AgentOS's own workspaces sync into Semanggi
+ * automatically, this is the manual bridge for one workspace at a time.
+ * Registering just calls the existing POST /api/work/projects with the
+ * workspace's own name and path — the same endpoint the Project row already
+ * reads from — so a freshly registered workspace immediately turns into an
+ * ordinary `ProjectRow` in the same list, with defaulted template/profile.
+ *
+ * Rendered as a row of the SAME "Project" list as registered projects
+ * (not a separate card): a project the operator hasn't registered yet is
+ * still an entry in "what projects could this be", not a different kind of
+ * information that deserves its own section.
+ */
+function UnregisteredProjectRow({
+  workspace,
+  busy,
+  onRegister,
+}: {
+  workspace: AgentOsWorkspaceRef;
+  busy: boolean;
+  onRegister: () => Promise<void>;
+}) {
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/50 py-2">
+      <div className="min-w-0">
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-medium">{workspace.name}</span>
+          <Badge tone="neutral">not registered</Badge>
+        </div>
+        <div className="truncate text-[10px] text-muted-foreground">{workspace.path}</div>
+      </div>
+      <Button size="sm" disabled={busy} onClick={onRegister}>
+        {busy ? "Registering…" : "Register to Semanggi"}
+      </Button>
+    </div>
+  );
+}
 
 function ProjectRow({
   project,
@@ -118,11 +165,31 @@ function ProjectRow({
  * Template is shown but not editable from this panel: it isn't synced from
  * AgentOS's own project template yet (that discovery task is still open), so
  * changing it here would be editing a value this UI doesn't actually own.
+ *
+ * `activeWorkspacePath` scopes the list to the workspace AgentOS currently
+ * has selected, exactly like the Summary page's "Active Project"/"All
+ * projects" toggle — same prop, same match-by-path-prefix, same default. A
+ * settings page listing every project across every workspace by default
+ * reads as "here is all of Semanggi", but a Brain/Role-Map/Brain-Map panel
+ * right next to it is already scoped that way implicitly (there's only ever
+ * one of each); Project is the one panel with a naturally per-workspace list,
+ * so it gets the explicit toggle the other three don't need.
  */
-export function SemanggiProjectsPanel() {
+export type AgentOsWorkspaceRef = { id: string; name: string; path: string };
+
+export function SemanggiProjectsPanel({
+  activeWorkspacePath,
+  agentosWorkspaces,
+}: {
+  activeWorkspacePath?: string | null;
+  agentosWorkspaces?: AgentOsWorkspaceRef[];
+}) {
   const { data, error, reload } = useAsync(() => semanggi.projects(), []);
   const [busy, setBusy] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [registeringId, setRegisteringId] = useState<string | null>(null);
+  const [registerError, setRegisterError] = useState<string | null>(null);
+  const [scope, setScope] = useState<string>("workspace");
 
   const save = async (id: string, profile: Profile) => {
     setBusy(true);
@@ -137,10 +204,49 @@ export function SemanggiProjectsPanel() {
     }
   };
 
+  const register = async (workspace: AgentOsWorkspaceRef) => {
+    setRegisteringId(workspace.id);
+    setRegisterError(null);
+    try {
+      await semanggi.createProject({ name: workspace.name, workspacePath: workspace.path });
+      await reload();
+    } catch (err) {
+      setRegisterError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRegisteringId(null);
+    }
+  };
+
+  const inScope = useCallback(
+    (path: string | null) => {
+      if (scope === "all" || !activeWorkspacePath) return true;
+      return Boolean(path && (path === activeWorkspacePath || path.startsWith(`${activeWorkspacePath}/`)));
+    },
+    [scope, activeWorkspacePath],
+  );
+
+  const visibleProjects = useMemo(() => (data?.projects ?? []).filter((p) => inScope(p.workspacePath)), [data, inScope]);
+
+  // An AgentOS workspace "is" a Semanggi project once some project's own
+  // workspacePath matches it exactly — the same relationship Summary/Control
+  // already read the other way round (matching a project to the active
+  // workspace by path). Not registered yet is the common case for any
+  // workspace nobody has run Semanggi work in — it isn't an error, just the
+  // reason the register button below exists. Scoped by the same Active
+  // Workspace/All Workspaces toggle as registered projects, since both now
+  // live in the same "Project" list.
+  const unregisteredWorkspaces = useMemo(() => {
+    const registeredPaths = new Set((data?.projects ?? []).map((p) => p.workspacePath).filter((p): p is string => Boolean(p)));
+    return (agentosWorkspaces ?? []).filter((w) => w.path && !registeredPaths.has(w.path) && inScope(w.path));
+  }, [data, agentosWorkspaces, inScope]);
+
+  const hasAnyRows = visibleProjects.length > 0 || unregisteredWorkspaces.length > 0;
+
   return (
-    <div className="space-y-4">
+    <div className="w-full space-y-4">
       {error ? <LoadError error={error} onRetry={reload} /> : null}
       {saveError ? <Notice tone="danger">{saveError}</Notice> : null}
+      {registerError ? <Notice tone="danger">{registerError}</Notice> : null}
 
       <Notice tone="info">
         Profile sets the default thinking level for every phase a WORK request creates in that project, unless a role
@@ -149,13 +255,36 @@ export function SemanggiProjectsPanel() {
         {PROFILES.map((p) => `${p}: ${PROFILE_HINT[p]}`).join(" ")}
       </Notice>
 
-      <Card title="Project" subtitle="Sets the default decomposition profile for every WORK request in this project.">
-        {!data || data.projects.length === 0 ? (
-          <Empty>No projects yet.</Empty>
+      <Card
+        title="Project"
+        subtitle="Sets the default decomposition profile for every WORK request in this project. AgentOS workspaces without a matching project yet appear here too, ready to register."
+        actions={
+          activeWorkspacePath ? (
+            <Select value={scope} onChange={setScope}>
+              <option value="workspace">Active Workspace</option>
+              <option value="all">All Workspaces</option>
+            </Select>
+          ) : null
+        }
+      >
+        {!hasAnyRows ? (
+          <Empty>
+            {scope === "workspace" && activeWorkspacePath
+              ? "Nothing for this workspace. Choose “All Workspaces” to see the rest."
+              : "No projects yet."}
+          </Empty>
         ) : (
           <div>
-            {data.projects.map((project) => (
+            {visibleProjects.map((project) => (
               <ProjectRow key={project.id} project={project} busy={busy} onSave={save} />
+            ))}
+            {unregisteredWorkspaces.map((workspace) => (
+              <UnregisteredProjectRow
+                key={workspace.id}
+                workspace={workspace}
+                busy={registeringId === workspace.id}
+                onRegister={() => register(workspace)}
+              />
             ))}
           </div>
         )}
@@ -192,15 +321,22 @@ const EMPTY_DRAFT: BrainDraft = {
   enabled: true,
 };
 
-function TestConnectionButton({ brainId }: { brainId: string }) {
+/**
+ * Runs a Brain connection test and reports the result — used both as the
+ * per-row action in the Brains table (against a saved Brain) and inside the
+ * Add/Edit Brain form (against a draft that may not be saved yet). The two
+ * differ only in which endpoint they call, so that difference is the only
+ * parameter this hook takes.
+ */
+function useConnectionTest(run: () => Promise<BrainTestResult>) {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
 
-  const run = async () => {
+  const trigger = async () => {
     setBusy(true);
     setResult(null);
     try {
-      const res = await semanggi.testBrain(brainId);
+      const res = await run();
       if (res.ok) {
         setResult({ ok: true, message: `OK${res.latencyMs ? ` · ${res.latencyMs}ms` : ""}` });
       } else {
@@ -213,13 +349,81 @@ function TestConnectionButton({ brainId }: { brainId: string }) {
     }
   };
 
+  return { busy, result, trigger };
+}
+
+/**
+ * Row action in the Brains table. The result used to print as a truncated
+ * line of text under the button, which made every row a different height
+ * and still cut off the interesting part of a real error. Now the button
+ * only ever says "Test"/"Testing…"; the outcome lives in the message icon
+ * next to it — colored to read at a glance (muted until run, green for a
+ * pass, amber for a fail) — and the full text is one hover away via the
+ * icon's tooltip, exactly where an operator scanning the column would look
+ * for "what happened" without it competing for row height.
+ */
+function TestConnectionButton({ brainId }: { brainId: string }) {
+  const { busy, result, trigger } = useConnectionTest(() => semanggi.testBrain(brainId));
+
+  const resultColor = !result
+    ? "text-muted-foreground/60"
+    : result.ok
+      ? "text-emerald-600 dark:text-emerald-400"
+      : "text-amber-600 dark:text-amber-400";
+
   return (
-    <div className="flex flex-col items-end gap-1">
-      <Button size="sm" variant="outline" disabled={busy} onClick={run}>
-        {busy ? "Testing…" : "Test connection"}
+    <div className="flex items-center gap-1.5">
+      <Button size="sm" variant="link" className="text-primary" disabled={busy} onClick={trigger}>
+        {busy ? "Testing…" : "Test"}
+      </Button>
+      <span className={resultColor} title={result ? result.message : "Run Test to see the result here"}>
+        <MessageSquare className="h-3.5 w-3.5" />
+      </span>
+    </div>
+  );
+}
+
+/**
+ * "Test Connection" inside Add/Edit Brain — verifies a (provider, model)
+ * combination has a live agent bound to it BEFORE the operator commits to
+ * saving it, using the same route + matching logic as the table's per-row
+ * Test (POST work/brains/test, no id required yet). Here the result stays as
+ * visible text rather than an icon: the form has the room, and a full
+ * explanation ("no agent provisioned for zai/glm-9.9" or "no ACP agent
+ * pinned") is exactly what someone about to save this Brain needs to read,
+ * not hover for.
+ */
+function TestDraftConnectionButton({
+  provider,
+  model,
+  thinking,
+  effortMode,
+}: {
+  provider: string;
+  model: string;
+  thinking: string;
+  effortMode: Brain["effortMode"];
+}) {
+  const { busy, result, trigger } = useConnectionTest(() =>
+    semanggi.testBrainDraft({ provider, model, thinking: thinking || null, effortMode }),
+  );
+
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <Button
+        size="sm"
+        variant="outline"
+        disabled={busy || !provider || !model}
+        onClick={trigger}
+        title="Send one throwaway prompt to a live agent already bound to this model"
+        className="shrink-0 whitespace-nowrap"
+      >
+        {busy ? "Testing…" : "Test Connection"}
       </Button>
       {result ? (
-        <span className={`max-w-[14rem] truncate text-[10px] ${result.ok ? "text-emerald-600 dark:text-emerald-300" : "text-red-600 dark:text-red-300"}`} title={result.message}>
+        <span
+          className={`text-[11px] ${result.ok ? "text-emerald-600 dark:text-emerald-300" : "text-amber-600 dark:text-amber-300"}`}
+        >
           {result.message}
         </span>
       ) : null}
@@ -234,7 +438,7 @@ function BrainFormModal({
   gatewayModels,
   onRefreshModels,
   thinkingLevels,
-  onRefreshLevels,
+  onReloadLevels,
   onClose,
   onSubmit,
 }: {
@@ -244,7 +448,7 @@ function BrainFormModal({
   gatewayModels: GatewayModel[];
   onRefreshModels: () => void;
   thinkingLevels: ThinkingLevelEntry[];
-  onRefreshLevels: () => void;
+  onReloadLevels: () => Promise<void>;
   onClose: () => void;
   onSubmit: (draft: BrainDraft) => Promise<void>;
 }) {
@@ -253,6 +457,7 @@ function BrainFormModal({
   const [error, setError] = useState<string | null>(null);
   const [refreshingModels, setRefreshingModels] = useState(false);
   const [refreshingLevels, setRefreshingLevels] = useState(false);
+  const [probeSamples, setProbeSamples] = useState<ThinkingProbeSample[] | null>(null);
 
   const providerOptions = useMemo(() => {
     const set = new Set<string>();
@@ -288,10 +493,48 @@ function BrainFormModal({
     }
   };
 
+  // Probes ONLY the (provider, model) currently in this form — never the
+  // whole fleet (2026-09-01 operator decision). The server call returns
+  // immediately with a background probe running; this polls its status
+  // because a real probe (up to 7 real dispatches, one per candidate level)
+  // can run for minutes, well past what a single HTTP request should block
+  // on through the AgentOS proxy chain.
   const refreshLevels = async () => {
+    if (!draft.provider || !draft.model) return;
     setRefreshingLevels(true);
+    setProbeSamples(null);
+    setError(null);
     try {
-      await onRefreshLevels();
+      const start = await semanggi.probeThinkingLevels(draft.provider, draft.model);
+      if (!start.started && start.reason === "no-agent") {
+        setError(
+          start.status.message ??
+            `No agent is currently provisioned for ${draft.provider}/${draft.model} — a probe needs a live agent bound to this model.`,
+        );
+        return;
+      }
+      let status: ThinkingProbeStatus = start.status;
+      setProbeSamples(status.samples ?? []);
+      // Bounded polling, not indefinite: 7 candidate levels at up to ~65s
+      // each is already several minutes in the honest case, and one of the
+      // documented candidates (groq/qwen3.6-27b) is known to hang on some
+      // levels until the gateway's own watchdog reclaims it. This cap just
+      // stops the FORM from waiting forever — the probe itself is already
+      // bounded per-level on the server, and keeps running there either way.
+      const deadline = Date.now() + 10 * 60 * 1000;
+      while (status.running && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 2_000));
+        status = await semanggi.thinkingProbeStatus(draft.provider, draft.model);
+        setProbeSamples(status.samples ?? []);
+      }
+      if (status.running) {
+        setError("Still probing in the background — reopen this model to see the finished result.");
+      } else if (status.error) {
+        setError(`Probe failed: ${status.error}`);
+      }
+      await onReloadLevels();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setRefreshingLevels(false);
     }
@@ -317,10 +560,11 @@ function BrainFormModal({
       title={mode === "create" ? "Add Brain" : `Edit Brain — ${initial.name}`}
       subtitle={immutable ? "Provider and model can't be changed after creation — agents are provisioned against them." : undefined}
       onClose={onClose}
+      width="max-w-3xl"
     >
       <div className="space-y-3">
         {error ? <Notice tone="danger">{error}</Notice> : null}
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="grid gap-3 sm:grid-cols-2">
           <Field label="Name">
             <input
               value={draft.name}
@@ -381,18 +625,27 @@ function BrainFormModal({
             </div>
           </Field>
 
-          <Field label="Model">
+          <Field label="Model" className="sm:col-span-2">
             <div className="flex items-center gap-2">
-              <Combobox
-                value={draft.model}
-                disabled={immutable}
-                onChange={(v) => setDraft({ ...draft, model: v })}
-                options={modelOptions}
-                placeholder="glm-5.2"
-              />
+              <div className="min-w-0 flex-1">
+                <Combobox
+                  value={draft.model}
+                  disabled={immutable}
+                  onChange={(v) => setDraft({ ...draft, model: v })}
+                  options={modelOptions}
+                  placeholder="glm-5.2"
+                />
+              </div>
               {!immutable ? (
-                <Button size="sm" variant="outline" disabled={refreshingModels} onClick={refreshModels} title="Refresh models from the gateway">
-                  {refreshingModels ? "…" : "Refresh Models"}
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={refreshingModels}
+                  onClick={refreshModels}
+                  title="Refresh models from the gateway"
+                  className="shrink-0 whitespace-nowrap"
+                >
+                  {refreshingModels ? "Refreshing…" : "Refresh Models"}
                 </Button>
               ) : null}
             </div>
@@ -400,6 +653,7 @@ function BrainFormModal({
 
           <Field
             label="Thinking"
+            className="sm:col-span-2"
             hint={
               levelEvidence?.evidence
                 ? levelEvidence.evidence
@@ -409,16 +663,28 @@ function BrainFormModal({
             }
           >
             <div className="flex items-center gap-2">
-              <Combobox
-                value={draft.thinking}
-                onChange={(v) => setDraft({ ...draft, thinking: v })}
-                options={levelOptions}
-                placeholder="off / low / high / max"
-              />
-              <Button size="sm" variant="outline" disabled={refreshingLevels} onClick={refreshLevels} title="Refresh the measured thinking-level catalog">
-                {refreshingLevels ? "…" : "Refresh Levels"}
+              <div className="min-w-0 flex-1">
+                <Combobox
+                  value={draft.thinking}
+                  onChange={(v) => setDraft({ ...draft, thinking: v })}
+                  options={levelOptions}
+                  placeholder="off / low / high / max"
+                />
+              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={refreshingLevels || !draft.provider || !draft.model}
+                onClick={refreshLevels}
+                title="Dispatch real probes against this exact model on the live gateway — can take several minutes"
+                className="shrink-0 whitespace-nowrap"
+              >
+                {refreshingLevels ? "Probing…" : "Refresh Levels"}
               </Button>
             </div>
+            {refreshingLevels || probeSamples ? (
+              <ProbeProgress samples={probeSamples} running={refreshingLevels} />
+            ) : null}
           </Field>
 
           <Field label="Effort mode">
@@ -466,6 +732,16 @@ function BrainFormModal({
             </Field>
           ) : null}
         </div>
+
+        <Field label="Connection" hint="Checks that a live agent is already bound to this exact model before you save.">
+          <TestDraftConnectionButton
+            provider={draft.provider}
+            model={draft.model}
+            thinking={draft.thinking}
+            effortMode={draft.effortMode}
+          />
+        </Field>
+
         <div className="flex justify-end gap-2">
           <Button variant="outline" onClick={onClose}>
             Cancel
@@ -476,6 +752,35 @@ function BrainFormModal({
         </div>
       </div>
     </Modal>
+  );
+}
+
+/**
+ * Compact per-level readout for a probe in flight or just finished — the
+ * whole point is that a probe takes real minutes (up to 7 real dispatches),
+ * so the operator watching the button needs to see it's making progress,
+ * not just a spinner with no information for several minutes straight.
+ */
+function ProbeProgress({ samples, running }: { samples: ThinkingProbeSample[] | null; running: boolean }) {
+  const done = new Map((samples ?? []).map((s) => [s.level, s]));
+  return (
+    <div className="flex flex-wrap items-center gap-1 text-[10px]">
+      {PROBE_CANDIDATE_LEVELS.map((level) => {
+        const sample = done.get(level);
+        const tone = !sample
+          ? "neutral"
+          : sample.included
+            ? "success"
+            : "warning";
+        const label = !sample ? level : sample.included ? `${level} ✓` : `${level} ✗`;
+        return (
+          <Badge key={level} tone={tone as "neutral" | "success" | "warning"} title={sample?.reason ?? undefined}>
+            {label}
+          </Badge>
+        );
+      })}
+      {running ? <span className="text-muted-foreground">probing…</span> : null}
+    </div>
   );
 }
 
@@ -493,13 +798,20 @@ export function SemanggiBrainsPanel() {
     semanggi.thinkingLevels().then((r) => setThinkingLevels(r.levels)).catch(() => setThinkingLevels([]));
   }, []);
 
+  // "Refresh Models" (the button): actually asks the gateway, and its answer
+  // is persisted server-side so the next page load / next form open doesn't
+  // have to ask again — see gateway-models.mjs.
   const refreshGatewayModels = useCallback(async () => {
-    const m = await semanggi.gatewayModels().catch(() => ({ models: [] }));
+    const m = await semanggi.refreshGatewayModels().catch(() => ({ models: [] }));
     setGatewayModels(m.models);
   }, []);
 
-  const refreshThinkingLevelsList = useCallback(async () => {
-    await semanggi.refreshThinkingLevels().catch(() => null);
+  // Pure reload — no probing here. The actual measurement (real dispatches
+  // against the gateway, scoped to one model at a time) happens inside
+  // BrainFormModal itself via semanggi.probeThinkingLevels, which knows
+  // which (provider, model) the form is currently on; this just re-reads
+  // whatever the DB has afterward so the dropdown picks up the new entry.
+  const reloadThinkingLevels = useCallback(async () => {
     const r = await semanggi.thinkingLevels().catch(() => ({ levels: [] }));
     setThinkingLevels(r.levels);
   }, []);
@@ -554,7 +866,7 @@ export function SemanggiBrainsPanel() {
   };
 
   return (
-    <div className="space-y-4">
+    <div className="w-full space-y-4">
       {error ? <LoadError error={error} onRetry={reload} /> : null}
 
       <Card
@@ -622,10 +934,10 @@ export function SemanggiBrainsPanel() {
                     </td>
                     <td className="px-2 py-1">
                       <div className="flex items-center justify-end gap-2">
-                        <Button size="sm" variant="outline" disabled={busy} onClick={() => setModal({ mode: "edit", brain })}>
+                        <Button size="sm" variant="link" className="text-primary" disabled={busy} onClick={() => setModal({ mode: "edit", brain })}>
                           Edit
                         </Button>
-                        <Button size="sm" variant="outline" disabled={busy} onClick={() => toggle(brain)}>
+                        <Button size="sm" variant="link" className="text-primary" disabled={busy} onClick={() => toggle(brain)}>
                           {brain.enabled ? "Disable" : "Enable"}
                         </Button>
                         <TestConnectionButton brainId={brain.id} />
@@ -647,7 +959,7 @@ export function SemanggiBrainsPanel() {
           gatewayModels={gatewayModels}
           onRefreshModels={refreshGatewayModels}
           thinkingLevels={thinkingLevels}
-          onRefreshLevels={refreshThinkingLevelsList}
+          onReloadLevels={reloadThinkingLevels}
           onClose={() => setModal(null)}
           onSubmit={(draft) => (modal.mode === "create" ? submitCreate(draft) : submitEdit(modal.brain!.id, draft))}
         />
@@ -683,7 +995,7 @@ export function SemanggiRoleMapPanel() {
   };
 
   return (
-    <div className="space-y-4">
+    <div className="w-full space-y-4">
       {error ? <LoadError error={error} onRetry={reload} /> : null}
       {saveError ? <Notice tone="danger">{saveError}</Notice> : null}
 
@@ -760,7 +1072,7 @@ export function SemanggiBrainMapPanel() {
   const stale = (data?.mappings ?? []).filter((m) => m.stale);
 
   return (
-    <div className="space-y-4">
+    <div className="w-full space-y-4">
       {error ? <LoadError error={error} onRetry={reload} /> : null}
       {saveError ? <Notice tone="danger">{saveError}</Notice> : null}
 

@@ -7,6 +7,10 @@ import {
   SemanggiRoleMapPanel,
   SemanggiProjectsPanel
 } from "@/components/semanggi/settings-panels";
+import {
+  buildWorkspaceSelectionStorageKey,
+  resolveWorkspaceSelection
+} from "@/components/mission-control/mission-control-shell.utils";
 import type { LucideIcon } from "lucide-react";
 import {
   Activity,
@@ -236,6 +240,27 @@ export function SettingsControlCenter(
     installSummary,
     sidebarOpen = false
   } = props;
+
+  // Read-only mirror of OperationsShell's own workspace-selection state
+  // (see comment on the import above) — Settings isn't inside that shell,
+  // so this is how the Project panel learns which workspace is "active".
+  const [activeWorkspacePath, setActiveWorkspacePath] = useState<string | null>(null);
+  useEffect(() => {
+    const workspaceRoot = snapshot.diagnostics.workspaceRoot;
+    if (!workspaceRoot) return;
+    const storedWorkspaceId = globalThis.localStorage?.getItem(
+      buildWorkspaceSelectionStorageKey(workspaceRoot)
+    ) ?? null;
+    const resolvedWorkspaceId = resolveWorkspaceSelection(
+      snapshot.workspaces.map((workspace) => workspace.id),
+      storedWorkspaceId,
+      null
+    );
+    const resolved = resolvedWorkspaceId
+      ? snapshot.workspaces.find((workspace) => workspace.id === resolvedWorkspaceId)?.path ?? null
+      : null;
+    setActiveWorkspacePath(resolved);
+  }, [snapshot.diagnostics.workspaceRoot, snapshot.workspaces]);
   const [gatewayAuthStatus, setGatewayAuthStatus] = useState<GatewayNativeAuthStatus | null>(null);
   const [gatewayAuthError, setGatewayAuthError] = useState<string | null>(null);
   const [gatewayAuthCredentialKind, setGatewayAuthCredentialKind] =
@@ -2183,7 +2208,14 @@ export function SettingsControlCenter(
 
               {renderedActiveSection === "semanggi-projects" ? (
               <section id="semanggi-projects" className="scroll-mt-24">
-                <SemanggiProjectsPanel />
+                <SemanggiProjectsPanel
+                  activeWorkspacePath={activeWorkspacePath}
+                  agentosWorkspaces={snapshot.workspaces.map((workspace) => ({
+                    id: workspace.id,
+                    name: workspace.name,
+                    path: workspace.path
+                  }))}
+                />
               </section>
               ) : null}
 

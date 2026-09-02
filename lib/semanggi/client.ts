@@ -104,6 +104,34 @@ export type TaskDetail = {
   dependencies: Array<{ id: string; status: string }>;
 };
 
+/**
+ * The gateway's own content-block shape — see `messages.flatten` in the
+ * controller (repositories.mjs) for where this vocabulary comes from:
+ * "thinking" is reasoning kept out of the flattened `text` because it's
+ * often longer than the answer, "toolCall" is what ran (a command, a file
+ * write, whatever `arguments` holds for that tool), "text" is the response
+ * itself. Anything else is rendered generically rather than hidden — the
+ * gateway may add block types this UI doesn't know about yet.
+ */
+export type TranscriptBlock = {
+  type: string;
+  text?: string;
+  thinking?: string;
+  name?: string;
+  arguments?: Record<string, unknown>;
+  [key: string]: unknown;
+};
+
+export type TranscriptTurn = {
+  executionId?: string;
+  revision: number;
+  role: string;
+  at: number;
+  text: string;
+  seq?: number;
+  blocks: TranscriptBlock[] | null;
+};
+
 export type WorkEvent = {
   seq: number;
   at: number;
@@ -167,6 +195,37 @@ export type ThinkingLevelEntry = {
   effortMode: EffortMode;
   evidence: string | null;
   updatedAt: number;
+};
+
+export type ThinkingProbeSample = {
+  level: string;
+  included: boolean;
+  outputTokens?: number | null;
+  reason: string | null;
+  status?: string;
+  latencyMs?: number;
+  startedAt?: number;
+};
+
+export type ThinkingProbeStatus = {
+  found?: boolean;
+  running: boolean;
+  startedAt: number | null;
+  finishedAt: number | null;
+  error: string | null;
+  reason: string | null;
+  message: string | null;
+  samples: ThinkingProbeSample[];
+};
+
+export type ThinkingProbeStartResult = {
+  ok: boolean;
+  started: boolean;
+  reason?: string;
+  provider: string;
+  model: string;
+  agentId?: string;
+  status: ThinkingProbeStatus;
 };
 
 export type BrainTestResult = {
@@ -247,6 +306,16 @@ export const semanggi = {
   projects: () => call<{ projects: ProjectSettings[] }>("GET", "work/projects"),
   updateProjectSettings: (id: string, patch: { template?: string; profile?: Profile }) =>
     call<{ project: ProjectSettings }>("PATCH", `work/projects/${id}`, patch),
+  // Registers an AgentOS workspace as a Semanggi project — the other
+  // direction of the same match-by-path relationship Summary/Control already
+  // read (a project's workspacePath). Name defaults to the workspace's own
+  // name since there is nothing else yet to name it after at this point.
+  createProject: (body: { name: string; workspacePath: string }) =>
+    call<{ project: { id: string; name: string; weight: number; template: string; profile: Profile } }>(
+      "POST",
+      "work/projects",
+      body,
+    ),
   tasks: (params: { project?: string; status?: string } = {}) => {
     const q = new URLSearchParams();
     if (params.project) q.set("project", params.project);
@@ -256,11 +325,7 @@ export const semanggi = {
   task: (id: string) => call<TaskDetail>("GET", `work/tasks/${id}`),
   events: (subject: string, limit = 200) =>
     call<{ events: WorkEvent[] }>("GET", `work/events?subject=${encodeURIComponent(subject)}&limit=${limit}`),
-  transcript: (id: string) =>
-    call<{ taskId: string; turns: Array<{ role: string; at: number; text: string; revision: number }> }>(
-      "GET",
-      `work/tasks/${id}/transcript`,
-    ),
+  transcript: (id: string) => call<{ taskId: string; turns: TranscriptTurn[] }>("GET", `work/tasks/${id}/transcript`),
 
   start: (id: string) => call<{ task: Task }>("POST", `work/tasks/${id}/start`, {}),
   stop: (id: string, reason?: string) => call<{ task: Task }>("POST", `work/tasks/${id}/stop`, { reason }),
@@ -279,12 +344,32 @@ export const semanggi = {
   createBrain: (brain: Partial<Brain>) => call<{ brain: Brain }>("POST", "work/brains", brain),
   updateBrain: (id: string, patch: Partial<Brain>) => call<{ brain: Brain }>("PATCH", `work/brains/${id}`, patch),
   testBrain: (id: string) => call<BrainTestResult>("POST", `work/brains/${id}/test`, {}),
+  // Same test, before the Brain exists as a saved row — lets "Add Brain"
+  // verify a (provider, model[, acpAgent]) combination has a live agent
+  // before the operator commits to it. `acpAgent` matters only for
+  // provider "claude-code": that harness is reached through a named ACP
+  // agent (routing.json), never matched by model like every other provider.
+  testBrainDraft: (draft: { provider: string; model: string; thinking?: string | null; effortMode?: EffortMode; acpAgent?: string | null }) =>
+    call<BrainTestResult>("POST", "work/brains/test", draft),
+  // Cached list (fast, no live gateway call). refreshGatewayModels() below is
+  // the one that actually asks the gateway and persists the answer here.
   gatewayModels: () => call<{ models: GatewayModel[] }>("GET", "work/gateway/models"),
+  refreshGatewayModels: () => call<{ models: GatewayModel[] }>("POST", "work/gateway/models/refresh", {}),
   thinkingLevels: (provider?: string, model?: string) => {
     const q = provider && model ? `?provider=${encodeURIComponent(provider)}&model=${encodeURIComponent(model)}` : "";
     return call<{ levels: ThinkingLevelEntry[] }>("GET", `work/gateway/thinking-levels${q}`);
   },
   refreshThinkingLevels: () => call<{ synced: number; at: number }>("POST", "work/gateway/thinking-levels/refresh", {}),
+  // Real per-model probe (D26): dispatches actual runs against the gateway,
+  // scoped to exactly the (provider, model) given — never a fleet sweep.
+  // Fire-and-forget on the server side; poll thinkingProbeStatus for progress.
+  probeThinkingLevels: (provider: string, model: string) =>
+    call<ThinkingProbeStartResult>("POST", "work/gateway/thinking-levels/probe", { provider, model }),
+  thinkingProbeStatus: (provider: string, model: string) =>
+    call<ThinkingProbeStatus>(
+      "GET",
+      `work/gateway/thinking-levels/probe/status?provider=${encodeURIComponent(provider)}&model=${encodeURIComponent(model)}`,
+    ),
   roleLevels: () => call<RoleLevels>("GET", "work/role-levels"),
   setRoleLevel: (template: string, role: string, level: Level) =>
     call<unknown>("PUT", "work/role-levels", { template, role, level }),
