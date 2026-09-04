@@ -89,7 +89,7 @@ export function SummaryPage({ activeWorkspacePath }: { activeWorkspacePath?: str
   }, []);
 
   /**
-   * Workspace filter.
+   * Current-project filter.
    *
    * Semanggi projects are identified by `workspacePath`, and AgentOS's active
    * workspace is also a path — so the match is a path prefix, not a shared id.
@@ -98,13 +98,27 @@ export function SummaryPage({ activeWorkspacePath }: { activeWorkspacePath?: str
    * thing both genuinely share is where the files live. `activeWorkspacePath`
    * now comes from AgentOS's real `OperationsShellContext.activeWorkspace`,
    * passed down from `app/summary/page.tsx` — no more `?workspace=` hack.
+   *
+   * More than one Semanggi project can share the same workspace path (a
+   * workspace can carry several parallel efforts), so "current project"
+   * means exactly ONE project — the first match, same tie-break Control uses
+   * for its own "Active Project" picker — not every project that happens to
+   * touch that workspace. "All projects" is the escape hatch for the rest.
    */
+  const currentProject = useMemo(() => {
+    if (projects.length === 0) return null;
+    const match = activeWorkspacePath
+      ? projects.find(
+          (p) => p.workspacePath && (p.workspacePath === activeWorkspacePath || p.workspacePath.startsWith(`${activeWorkspacePath}/`)),
+        )
+      : null;
+    return match ?? projects[0];
+  }, [projects, activeWorkspacePath]);
+
   const visibleProjects = useMemo(() => {
-    if (scope === "all" || !activeWorkspacePath) return projects;
-    return projects.filter(
-      (p) => p.workspacePath && (p.workspacePath === activeWorkspacePath || p.workspacePath.startsWith(`${activeWorkspacePath}/`)),
-    );
-  }, [projects, scope, activeWorkspacePath]);
+    if (scope === "all") return projects;
+    return currentProject ? [currentProject] : [];
+  }, [projects, scope, currentProject]);
 
   const tasksByProject = useMemo(() => {
     const map = new Map<string, Task[]>();
@@ -131,7 +145,7 @@ export function SummaryPage({ activeWorkspacePath }: { activeWorkspacePath?: str
       actions={
         <>
           <Select value={scope} onChange={setScope}>
-            <option value="workspace">Active Project</option>
+            <option value="workspace">Current Project</option>
             <option value="all">All projects</option>
           </Select>
           <Button variant="outline" size="sm" onClick={() => void load()}>
@@ -144,8 +158,8 @@ export function SummaryPage({ activeWorkspacePath }: { activeWorkspacePath?: str
 
       {!error && !loading && visibleProjects.length === 0 ? (
         <Empty>
-          {scope === "workspace" && activeWorkspacePath
-            ? "No Semanggi projects for this workspace. Choose “All projects” to see the rest."
+          {scope === "workspace"
+            ? "No current project to show. Choose “All projects” to see the rest."
             : "No projects in the controller yet."}
         </Empty>
       ) : null}

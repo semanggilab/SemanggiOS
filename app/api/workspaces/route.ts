@@ -112,60 +112,62 @@ export async function POST(request: Request) {
       return NextResponse.json(redactSecrets(created));
     }
 
-    const responseStream = new TransformStream();
-    const writer = responseStream.writable.getWriter();
     const encoder = new TextEncoder();
-    let writeChain = Promise.resolve();
     let latestProgress: OperationProgressSnapshot | undefined;
 
-    const send = (event: WorkspaceCreateStreamEvent) => {
-      const safeEvent = redactSecrets(event);
-      writeChain = writeChain
-        .then(() => writer.write(encoder.encode(`${JSON.stringify(safeEvent)}\n`)))
-        .catch(() => {});
+    // A plain ReadableStream (controller.enqueue/close), rather than the
+    // writable side of a TransformStream, is the pattern Next.js's own
+    // streaming Route Handler docs use — piping a TransformStream through
+    // `new Response()` on this stack (Next standalone output, behind the
+    // Swarm's chained proxies) intermittently ended the chunked response one
+    // write short of its terminator, which Chrome surfaces as
+    // ERR_INCOMPLETE_CHUNKED_ENCODING even though every NDJSON line
+    // (including the final "done" event) had already reached the client.
+    const responseStream = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        const send = (event: WorkspaceCreateStreamEvent) => {
+          const safeEvent = redactSecrets(event);
+          controller.enqueue(encoder.encode(`${JSON.stringify(safeEvent)}\n`));
+        };
 
-      return writeChain;
-    };
+        try {
+          const created = await createWorkspaceProject(input, {
+            onProgress: async (progress) => {
+              latestProgress = progress;
+              send({
+                type: "progress",
+                progress
+              });
+            }
+          });
 
-    void (async () => {
-      try {
-        const created = await createWorkspaceProject(input, {
-          onProgress: async (progress) => {
-            latestProgress = progress;
-            await send({
-              type: "progress",
-              progress
-            });
-          }
-        });
-
-        await send({
-          type: "done",
-          ok: true,
-          progress:
-            latestProgress ??
-            ({
-              title: "Provisioning workspace",
-              description: "Workspace bootstrap finished.",
-              percent: 100,
-              steps: []
-            } satisfies OperationProgressSnapshot),
-          result: created
-        });
-      } catch (error) {
-        await send({
-          type: "done",
-          ok: false,
-          error: redactErrorMessage(error, "Unable to create workspace."),
-          progress: latestProgress
-        });
-      } finally {
-        await writeChain;
-        await writer.close();
+          send({
+            type: "done",
+            ok: true,
+            progress:
+              latestProgress ??
+              ({
+                title: "Provisioning workspace",
+                description: "Workspace bootstrap finished.",
+                percent: 100,
+                steps: []
+              } satisfies OperationProgressSnapshot),
+            result: created
+          });
+        } catch (error) {
+          send({
+            type: "done",
+            ok: false,
+            error: redactErrorMessage(error, "Unable to create workspace."),
+            progress: latestProgress
+          });
+        } finally {
+          controller.close();
+        }
       }
-    })();
+    });
 
-    return new Response(responseStream.readable, {
+    return new Response(responseStream, {
       headers: {
         "Content-Type": "application/x-ndjson; charset=utf-8",
         "Cache-Control": "no-store"

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { toast } from "@/components/ui/sonner";
 import { consumeNdjsonStream } from "@/lib/ndjson";
+import { randomUUID } from "@/lib/utils";
 import {
   createPlannerMessage,
   enrichWorkspacePlan
@@ -480,7 +481,7 @@ export function useWorkspaceWizardDraft({
 
     commitPlan(ensuredPlan);
     onWorkspaceCreationStarted?.({
-      id: `creating-workspace:${crypto.randomUUID()}`,
+      id: `creating-workspace:${randomUUID()}`,
       name: ensuredPlan.workspace.name.trim() || "Untitled workspace",
       createdAt: Date.now()
     });
@@ -514,7 +515,7 @@ export function useWorkspaceWizardDraft({
           }),
           creation: {
             source: "quick-create",
-            idempotencyKey: crypto.randomUUID()
+            idempotencyKey: randomUUID()
           },
           stream: true
         })

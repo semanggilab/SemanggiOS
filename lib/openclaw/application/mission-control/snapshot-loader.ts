@@ -111,7 +111,8 @@ import {
   MISSION_CONTROL_GATEWAY_STATUS_STALE_GRACE_MS,
   MISSION_CONTROL_MISSION_PRESETS,
   MISSION_CONTROL_RUNTIME_DIAGNOSTICS_TTL_MS,
-  MISSION_CONTROL_SNAPSHOT_TTL_MS
+  MISSION_CONTROL_SNAPSHOT_TTL_MS,
+  resolveWorkspaceRoot
 } from "@/lib/openclaw/application/mission-control/snapshot-utils";
 import { buildSystemReadinessSnapshot } from "@/lib/openclaw/application/mission-control/system-readiness-snapshot";
 
@@ -563,6 +564,22 @@ async function loadMissionControlSnapshots({
       missionPresets: MISSION_CONTROL_MISSION_PRESETS
     };
 
+    // OpenClaw's built-in "main" agent has no project workspace of its own,
+    // so it resolves to the workspace root itself (the parent folder every
+    // real workspace lives under). Left in the workspace list, that root
+    // folder surfaces everywhere workspaces are picked or listed — the
+    // sidebar switcher, Settings -> Semanggi -> Project, the Files page — as
+    // a phantom "Workspaces" project nobody created, pointing at files that
+    // were never meant to be browsed as one project's, and (because the
+    // Gateway refuses to ever delete its own "main" agent) an undeletable
+    // one. It is filtered out of the *workspace list* only, here at the one
+    // spot every page's `snapshot.workspaces` traces back to — "main" itself
+    // stays in `visibleAgents` untouched, so chat, model status, and the
+    // Agents page keep working with it normally.
+    const resolvedWorkspaceRoot = resolveWorkspaceRoot(configuredWorkspaceRoot);
+    const isDefaultRootWorkspace = (workspace: { path: string }) =>
+      workspace.path.replace(/\/+$/, "") === resolvedWorkspaceRoot.replace(/\/+$/, "");
+
     return {
       full: {
         ...sharedSnapshotFields,
@@ -576,7 +593,7 @@ async function loadMissionControlSnapshots({
       },
       visible: {
         ...sharedSnapshotFields,
-        workspaces: visibleWorkspaces,
+        workspaces: visibleWorkspaces.filter((workspace) => !isDefaultRootWorkspace(workspace)),
         agents: visibleAgents,
         models: buildMissionControlModelRecords({ models, agents: visibleAgents, modelStatus, configuredModelIds }),
         runtimes: visibleRuntimes,

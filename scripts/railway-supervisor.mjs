@@ -651,10 +651,17 @@ function normalizeBrowserWorkerUrl(value) {
   ) {
     throw new Error("AGENTOS_BROWSER_WORKER_URL must be an HTTP(S) service origin.");
   }
+  // Railway's own private DNS always ends in .railway.internal; other
+  // orchestrators (Docker Swarm, Compose) hand out short, dot-free service
+  // names instead (e.g. "browser-worker") that resolve only inside the
+  // overlay network. Both are "not a public hostname" - the actual thing
+  // this check guards against - so accept either shape rather than only
+  // Railway's, which would otherwise reject every non-Railway deployment.
   if (
     process.env.AGENTOS_DEPLOYMENT_PLATFORM === "railway" &&
     url.hostname !== "127.0.0.1" &&
-    !url.hostname.endsWith(".railway.internal")
+    !url.hostname.endsWith(".railway.internal") &&
+    url.hostname.includes(".")
   ) {
     throw new Error(
       "Railway Secure Browser workers must use a private .railway.internal hostname."

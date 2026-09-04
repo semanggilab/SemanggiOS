@@ -1088,7 +1088,7 @@ function isSnapshotModelUsable(snapshot: MissionControlSnapshot, modelId: string
 // at the path below (see CLAUDE.md §3/§5.1). Falling back to it means a
 // fresh operator who never set Settings → Workspace Root still lands
 // somewhere real instead of a directory that silently doesn't exist.
-const SEMANGGI_DEFAULT_WORKSPACE_ROOT = "/opt/semanggi/volumes/shared/service/openclaw/workspaces";
+const SEMANGGI_DEFAULT_WORKSPACE_ROOT = "/opt/semanggi/volumes/shared/service/semanggios/openclaw/workspaces";
 
 function resolveWorkspaceRoot(configuredWorkspaceRoot?: string | null) {
   return configuredWorkspaceRoot || SEMANGGI_DEFAULT_WORKSPACE_ROOT;

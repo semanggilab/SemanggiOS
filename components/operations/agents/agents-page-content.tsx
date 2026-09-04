@@ -34,6 +34,15 @@ import {
 import { EmptyState, EntityIcon, FilterChip, InspectorPanelFrame, KeyValue, MoreButton, OperationsPageLayout, PageHeader, SearchToolbar, SectionCard, StatCard, StatGrid, StatusBadge, ToolbarButton, ViewToggle, type StatusTone } from "@/components/operations/operations-ui";
 import { agentFilterLabel, formatAgentDisplayNameFromRecord, formatAgentSortLabel, MissionDispatchDialog, readClientError, sortAgentViews, toTitleCase } from "@/components/operations/operations-shared";
 
+// OpenClaw's Gateway hard-refuses to ever delete its own built-in "main"
+// agent (INVALID_REQUEST: "main" cannot be deleted, with CLI fallback
+// disabled for this operation) — it isn't an AgentOS permission the UI can
+// grant, so Delete is disabled for it here instead of letting every attempt
+// fail with a Gateway error.
+function isProtectedGatewayAgent(agent: { id: string }) {
+  return agent.id === "main";
+}
+
 export function AgentsPageContent({
   snapshot,
   rootSnapshot,
@@ -104,6 +113,13 @@ export function AgentsPageContent({
     if (!agent.source) {
       toast.message("Delete is unavailable.", {
         description: "This row is not backed by an AgentOS agent record."
+      });
+      return;
+    }
+
+    if (isProtectedGatewayAgent(agent)) {
+      toast.message("Delete is unavailable.", {
+        description: "OpenClaw's Gateway protects its built-in \"main\" agent and will always refuse to delete it."
       });
       return;
     }
@@ -819,8 +835,14 @@ function AgentInspector({
         variant="destructive"
         size="sm"
         className="mt-3 h-8 w-full rounded-[9px] text-xs"
-        disabled={deleting || !agent.source}
-        title={agent.source ? "Delete this AgentOS/OpenClaw agent." : "Delete requires a real agent record."}
+        disabled={deleting || !agent.source || isProtectedGatewayAgent(agent)}
+        title={
+          isProtectedGatewayAgent(agent)
+            ? "OpenClaw's Gateway protects its built-in \"main\" agent and will always refuse to delete it."
+            : agent.source
+              ? "Delete this AgentOS/OpenClaw agent."
+              : "Delete requires a real agent record."
+        }
         onClick={onDelete}
       >
         {deleting ? "Deleting..." : "Delete Agent"}

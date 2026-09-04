@@ -57,6 +57,7 @@ import type { MissionControlShellSettingsPanelProps } from "@/components/mission
 import {
   buildOpenClawCapabilityRows,
   formatGatewayFallbackDiagnosticKind,
+  isDefaultRootWorkspace,
   resolveGatewayActionGuidance,
   resolveTransportDiagnosticsSummary,
   resolveGatewayFallbackRecovery,
@@ -170,9 +171,9 @@ const settingsSections: SettingsSection[] = [
   { id: "workspace", label: "Workspace", icon: Folder, group: "Workspace" },
   { id: "agents", label: "Agents", icon: Bot, group: "Workspace" },
   { id: "semanggi-projects", label: "Project", icon: FolderKanban, group: "Semanggi" },
-  { id: "semanggi-role-map", label: "Role Map", icon: Users, group: "Semanggi" },
+  { id: "semanggi-role-map", label: "Role Level Map", icon: Users, group: "Semanggi" },
   { id: "semanggi-brains", label: "Brains", icon: Layers, group: "Semanggi" },
-  { id: "semanggi-brain-map", label: "Brain Map", icon: Share2, group: "Semanggi" },
+  { id: "semanggi-brain-map", label: "Role Brain Map", icon: Share2, group: "Semanggi" },
   { id: "diagnostics", label: "Diagnostics", icon: TerminalSquare, group: "System" },
   { id: "advanced", label: "Advanced", icon: Settings2, group: "System" },
   { id: "danger-zone", label: "Danger Zone", icon: AlertTriangle, group: "System", destructive: true }
@@ -2210,11 +2211,13 @@ export function SettingsControlCenter(
               <section id="semanggi-projects" className="scroll-mt-24">
                 <SemanggiProjectsPanel
                   activeWorkspacePath={activeWorkspacePath}
-                  agentosWorkspaces={snapshot.workspaces.map((workspace) => ({
-                    id: workspace.id,
-                    name: workspace.name,
-                    path: workspace.path
-                  }))}
+                  agentosWorkspaces={snapshot.workspaces
+                    .filter((workspace) => !isDefaultRootWorkspace(workspace, snapshot.diagnostics.workspaceRoot))
+                    .map((workspace) => ({
+                      id: workspace.id,
+                      name: workspace.name,
+                      path: workspace.path
+                    }))}
                 />
               </section>
               ) : null}

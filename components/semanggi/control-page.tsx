@@ -143,7 +143,7 @@ export function ControlPage({ activeWorkspacePath }: { activeWorkspacePath?: str
     <div className="sticky top-0 flex h-[100dvh] w-full flex-col">
       <header className="flex flex-wrap items-center justify-between gap-3 border-b border-border/70 px-6 py-4">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Control</h1>
+          <h1 className="text-2xl font-semibold tracking-tight">Command Center</h1>
           <p className="mt-0.5 text-xs text-muted-foreground">
             Conversation, a command on an existing task, or new work to decompose — the intent router decides which.
           </p>

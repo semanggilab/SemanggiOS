@@ -58,6 +58,7 @@ import {
 import { RailTooltip } from "@/components/mission-control/rail-tooltip";
 import { StatusDot } from "@/components/mission-control/status-dot";
 import { CreateAgentDialog } from "@/components/mission-control/create-agent-dialog";
+import { isDefaultRootWorkspace } from "@/components/mission-control/settings-control-center.utils";
 import {
   UserProfileDialog,
   type OperatorProfileSummary
@@ -190,7 +191,7 @@ const sidebarItems: SidebarItem[] = [
   { label: "Mission Control", href: "/", icon: Gauge, section: "overview" },
   { label: "Dashboard", href: "/dashboard", icon: Inbox, section: "overview" },
   { label: "Summary", href: "/summary", icon: LayoutList, section: "semanggi" },
-  { label: "Control", href: "/control", icon: MessageSquare, section: "semanggi" },
+  { label: "Command Center", href: "/control", icon: MessageSquare, section: "semanggi" },
   { label: "Agents", href: "/agents", icon: Bot, section: "operations" },
   { label: "Operations", href: "/operations", icon: Activity, section: "operations" },
   { label: "Tasks", href: "/tasks", icon: ClipboardList, section: "operations" },
@@ -307,10 +308,21 @@ export function MissionSidebar({
     },
     [pendingCreatedAgents, pendingWorkspaceCreations, snapshot.workspaces]
   );
+  // The Gateway's built-in "main" agent has no project workspace of its own,
+  // so it resolves to `workspaceRoot` itself — the parent folder every real
+  // workspace lives under. Left in, that surfaces as a phantom "Workspaces"
+  // entry nobody created and the Gateway will never let anyone delete (its
+  // "main" agent is protected). It is excluded here rather than upstream in
+  // the snapshot so "main" stays fully usable everywhere else (chat, model
+  // status) — only its non-workspace here is hidden from workspace pickers.
+  const realWorkspaces = useMemo(
+    () => snapshot.workspaces.filter((workspace) => !isDefaultRootWorkspace(workspace, snapshot.diagnostics.workspaceRoot)),
+    [snapshot.workspaces, snapshot.diagnostics.workspaceRoot]
+  );
   const workspaceMenuEntries = useMemo<WorkspaceMenuEntry[]>(
     () => [
-      ...snapshot.workspaces.map((workspace, index) => ({
-        sortRank: resolveWorkspaceMenuSortRank(workspace, index, snapshot.workspaces.length),
+      ...realWorkspaces.map((workspace, index) => ({
+        sortRank: resolveWorkspaceMenuSortRank(workspace, index, realWorkspaces.length),
         id: workspace.id,
         name: workspace.name,
         detail: `${workspace.agentIds.length} agents`,
@@ -321,7 +333,7 @@ export function MissionSidebar({
         sortRank: workspace.createdAt
       }))
     ].sort((left, right) => right.sortRank - left.sortRank || left.name.localeCompare(right.name)),
-    [pendingWorkspaceEntries, snapshot.workspaces]
+    [pendingWorkspaceEntries, realWorkspaces]
   );
   const workspaceCount = workspaceMenuEntries.length;
   const activePendingWorkspace = activeWorkspaceId
@@ -332,7 +344,7 @@ export function MissionSidebar({
       ? snapshot.workspaces.find((workspace) => workspace.id === activeWorkspaceId)
       : null) ??
     activePendingWorkspace ??
-    snapshot.workspaces[0] ??
+    realWorkspaces[0] ??
     null;
   const statusTone = resolveStatusTone(snapshot.diagnostics.health, connectionState);
   const statusLabel =
@@ -1170,7 +1182,7 @@ function SidebarBrand({
           />
         </span>
         <span className="truncate py-0.5 font-display text-[1.15rem] font-semibold leading-[1.25] text-foreground">
-          Agent<span className="text-primary">OS</span>
+          Semanggi<span className="text-primary">OS</span>
         </span>
       </Link>
 
@@ -1235,7 +1247,10 @@ function SidebarCreateAgentAction({
   onAgentCreatedVisible?: (agentId: string) => void;
   onOpenCreateAgent?: () => void;
 }) {
-  const hasWorkspace = Boolean(activeWorkspaceId ?? snapshot.workspaces[0]?.id);
+  const hasWorkspace = Boolean(
+    activeWorkspaceId ??
+      snapshot.workspaces.find((workspace) => !isDefaultRootWorkspace(workspace, snapshot.diagnostics.workspaceRoot))?.id
+  );
   const trigger = collapsed ? (
     <button
       type="button"

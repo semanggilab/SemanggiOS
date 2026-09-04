@@ -134,7 +134,7 @@ import {
   getModelProviderDescriptor,
   normalizeAddModelsProviderId
 } from "@/lib/openclaw/model-provider-registry";
-import { cn } from "@/lib/utils";
+import { cn, randomUUID } from "@/lib/utils";
 
 const MissionCanvasView = dynamic(
   () => import("@/components/mission-control/canvas").then((mod) => mod.MissionCanvas),
@@ -2892,7 +2892,7 @@ export function MissionControlShell({
           },
           creation: {
             source: "launchpad",
-            idempotencyKey: crypto.randomUUID()
+            idempotencyKey: randomUUID()
           },
           stream: true
         })

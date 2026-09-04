@@ -25,18 +25,27 @@ export type Brain = {
 };
 
 export type RoleLevels = {
-  defaults: Record<string, Record<string, Level | null>>;
+  /** template → profile → role → level. Every combination is explicit. */
+  defaults: Record<string, Record<string, Record<string, Level>>>;
   profileMapping: Record<string, Level>;
-  overrides: Array<{ template: string; role: string; level: Level; updatedAt: number }>;
+  profiles: Profile[];
+  overrides: Array<{
+    template: string;
+    profile: Profile;
+    role: string;
+    level: Level;
+    updatedAt: number;
+  }>;
 };
 
 export type BrainMapping = {
   template: string;
   role: string;
+  level: Level;
   brainId: string;
   brainName: string | null;
   brainLevel: Level | null;
-  roleLevel: Level | null;
+  belowLevel: boolean;
   stale: boolean;
   actor: string;
   updatedAt: number;
@@ -45,8 +54,32 @@ export type BrainMapping = {
 export type BrainMap = {
   roles: Record<string, string[]>;
   rolesNotInAgentOs: string[];
+  levels: Level[];
+  /** template → role → level → default brain NAME (the grid's initial fill). */
+  defaults: Record<string, Record<string, Record<string, string>>>;
   brains: Array<{ id: string; name: string; level: Level; category: string | null }>;
   mappings: BrainMapping[];
+};
+
+/** One row of the "Project Role Level" modal: a role actually registered on
+ *  the project, the level it would run at, and the brain that level maps to. */
+export type ProjectRoleLevel = {
+  role: string;
+  level: Level;
+  roleMapDefault: Level;
+  projectOverride: Level | null;
+  brain: { id: string; name: string } | null;
+  brainSource: string;
+  brainNote: string | null;
+};
+
+export type ProjectRoleLevels = {
+  projectId: string;
+  template: string;
+  profile: Profile;
+  profiles: Profile[];
+  hasOwnMapping: boolean;
+  roles: ProjectRoleLevel[];
 };
 
 export type Task = {
@@ -177,6 +210,8 @@ export type CatalogModel = {
   effort: string | null;
   effortMode: EffortMode;
   effortEvidence: string | null;
+  mode: string;
+  acpAgent: string | null;
   availability: string;
 };
 
@@ -371,11 +406,23 @@ export const semanggi = {
       `work/gateway/thinking-levels/probe/status?provider=${encodeURIComponent(provider)}&model=${encodeURIComponent(model)}`,
     ),
   roleLevels: () => call<RoleLevels>("GET", "work/role-levels"),
-  setRoleLevel: (template: string, role: string, level: Level) =>
-    call<unknown>("PUT", "work/role-levels", { template, role, level }),
+  setRoleLevel: (template: string, profile: Profile, role: string, level: Level | null) =>
+    call<unknown>("PUT", "work/role-levels", { template, profile, role, level }),
   brainMap: () => call<BrainMap>("GET", "work/brain-map"),
-  setBrainMapping: (template: string, role: string, brainId: string | null) =>
-    call<unknown>("PUT", "work/brain-map", { template, role, brainId }),
+  setBrainMapping: (template: string, role: string, level: Level, brainId: string | null) =>
+    call<unknown>("PUT", "work/brain-map", { template, role, level, brainId }),
+  projectRoleLevels: (id: string, profile?: Profile) => {
+    const q = profile ? `?profile=${encodeURIComponent(profile)}` : "";
+    return call<ProjectRoleLevels>("GET", `work/projects/${id}/role-levels${q}`);
+  },
+  putProjectRoleLevels: (
+    id: string,
+    body: { profile?: Profile; roleLevels: Array<{ role: string; level: Level }> },
+  ) => call<{ projectId: string; roleLevels: Array<{ role: string; level: Level }> }>(
+    "PUT",
+    `work/projects/${id}/role-levels`,
+    body,
+  ),
 
   control: (payload: { text: string; projectId?: string; template?: string; profile?: string; confirm?: boolean }) =>
     call<ControlReply>("POST", "work/control/message", payload),
@@ -408,7 +455,7 @@ export function columnFor(status: string): ColumnId {
 // assertWorkspacePath in the controller). It's structural, not content — an
 // operator reading a path wants to know which project/branch/worktree they're
 // looking at, not confirm the mount point for the tenth time today.
-const WORKSPACE_PREFIX = "/opt/semanggi/volumes/shared/service/openclaw";
+const WORKSPACE_PREFIX = "/opt/semanggi/volumes/shared/service/semanggios/openclaw";
 
 export function shortenWorkspacePath(path: string | null | undefined): string {
   if (!path) return "—";

@@ -1016,3 +1016,31 @@ function hasFallbackAfterLastConnected(
     return !Number.isFinite(fallbackMs) || fallbackMs >= connectedMs;
   });
 }
+
+/**
+ * The Gateway's built-in "main" agent has no project workspace of its own —
+ * when nothing more specific is configured, AgentOS resolves its workspace
+ * to the same directory as `workspaceRoot` (the parent folder every real
+ * project workspace lives under, e.g. `.../openclaw/workspaces`). That makes
+ * the root folder itself surface as if it were an ordinary workspace/project
+ * called "Workspaces": it appears in the workspace switcher, in the Semanggi
+ * Project settings panel's "register" list, and (because OpenClaw's Gateway
+ * refuses to ever delete its own built-in "main" agent) its Delete action
+ * always fails with INVALID_REQUEST.
+ *
+ * This isn't a workspace a person created — it is the container real
+ * workspaces are created inside of — so both the sidebar workspace list and
+ * the Settings -> Semanggi -> Project "not registered" list exclude it by
+ * comparing a workspace's `path` against the resolved workspace root.
+ */
+export function isDefaultRootWorkspace(
+  workspace: { path: string },
+  workspaceRoot: string | null | undefined
+): boolean {
+  if (!workspaceRoot) {
+    return false;
+  }
+
+  const normalize = (value: string) => value.replace(/\/+$/, "");
+  return normalize(workspace.path) === normalize(workspaceRoot);
+}

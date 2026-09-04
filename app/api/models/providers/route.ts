@@ -821,7 +821,18 @@ async function connectExplicitProvider(
   const apiKey = input.apiKey?.trim();
   const manualModelId = input.modelId?.trim();
 
-  if (!input.endpoint?.trim() || !apiKey) {
+  // Reconnecting an already-configured explicit provider (Groq, Zai, ...)
+  // never re-collects a Base URL in the UI - only a fresh API key. Fall
+  // back to the endpoint already on file so that flow doesn't require a
+  // Base URL the form never asked for.
+  const requestedEndpoint = input.endpoint?.trim();
+  const existingProviderConfig = requestedEndpoint
+    ? null
+    : await readOpenClawExplicitProviderConfig(input.provider).catch(() => null);
+  const fallbackBaseUrl = existingProviderConfig ? readProviderBaseUrl(existingProviderConfig) : null;
+  const effectiveEndpoint = requestedEndpoint || fallbackBaseUrl || "";
+
+  if (!effectiveEndpoint || !apiKey) {
     const statusContext = await readProviderConnectionContext(input.provider);
 
     return buildActionResult({
@@ -836,7 +847,7 @@ async function connectExplicitProvider(
   }
 
   try {
-    baseUrl = normalizeOpenAiCompatibleProviderBaseUrl(input.endpoint);
+    baseUrl = normalizeOpenAiCompatibleProviderBaseUrl(effectiveEndpoint);
   } catch (error) {
     const statusContext = await readProviderConnectionContext(input.provider);
 
@@ -1392,6 +1403,31 @@ function readProviderApiKey(providerConfig: OpenClawProviderModelsEntry | null) 
   return typeof rawApiKey === "string" && rawApiKey.trim() ? rawApiKey.trim() : null;
 }
 
+// OpenClaw stores some provider credentials as a secret reference
+// ({ source: "env" | "file" | "exec", id: "..." }) instead of a literal
+// string, e.g. when the key is backed by a mounted Docker secret. That
+// shape can't be used directly as a Bearer token (readProviderApiKey stays
+// string-only for that), but it IS a genuinely configured credential and
+// must count as one for connection-status purposes. Mirrors
+// isConfiguredCredentialValue in model-provider-state-service.ts.
+function isProviderApiKeyConfigured(providerConfig: OpenClawProviderModelsEntry | null) {
+  const rawApiKey = providerConfig?.apiKey;
+
+  if (typeof rawApiKey === "string") {
+    return rawApiKey.trim().length > 0;
+  }
+
+  if (!rawApiKey || typeof rawApiKey !== "object") {
+    return false;
+  }
+
+  const record = rawApiKey as Record<string, unknown>;
+  const source = typeof record.source === "string" ? record.source.trim() : "";
+  const id = typeof record.id === "string" ? record.id.trim() : "";
+
+  return (source === "env" || source === "file" || source === "exec") && id.length > 0;
+}
+
 function readProviderName(providerConfig: OpenClawProviderModelsEntry | null) {
   const rawName = providerConfig?.label ?? providerConfig?.name;
 
@@ -1748,19 +1784,19 @@ async function buildExplicitProviderConnectionStatus(
 ): Promise<AddModelsProviderConnectionStatus> {
   const providerConfig = await readOpenClawExplicitProviderConfig(provider);
   const baseUrl = readProviderBaseUrl(providerConfig);
-  const apiKey = readProviderApiKey(providerConfig);
+  const apiKeyConfigured = isProviderApiKeyConfigured(providerConfig);
   const modelCount = providerConfig?.models?.length ?? 0;
   const configuredCount = [...configuredModelIds].filter((modelId) => modelMatchesProvider(provider, modelId)).length;
 
   return {
     provider,
-    connected: Boolean(baseUrl && apiKey && (modelCount > 0 || configuredCount > 0)),
+    connected: Boolean(baseUrl && apiKeyConfigured && (modelCount > 0 || configuredCount > 0)),
     canConnect: true,
     needsTerminal: false,
     source: "openclaw-config",
-    degraded: Boolean(baseUrl && apiKey && modelCount === 0 && configuredCount === 0),
+    degraded: Boolean(baseUrl && apiKeyConfigured && modelCount === 0 && configuredCount === 0),
     stale: false,
-    recovery: baseUrl && apiKey && modelCount === 0 && configuredCount === 0
+    recovery: baseUrl && apiKeyConfigured && modelCount === 0 && configuredCount === 0
       ? "Discovery returned no persisted models. Add a model ID manually or retry discovery."
       : null,
     detail: baseUrl
