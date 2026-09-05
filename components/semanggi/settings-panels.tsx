@@ -445,6 +445,11 @@ type BrainDraft = {
   category: string;
   description: string;
   enabled: boolean;
+  /** "" leaves the stored/default value alone; a numeric string stores an
+   *  explicit window. Selects are string-typed because "" is the "no opinion"
+   *  state and number has no such value. */
+  quotaResetShortMs: string;
+  quotaResetLongMs: string;
 };
 
 const EMPTY_DRAFT: BrainDraft = {
@@ -460,6 +465,8 @@ const EMPTY_DRAFT: BrainDraft = {
   category: "",
   description: "",
   enabled: true,
+  quotaResetShortMs: "",
+  quotaResetLongMs: "",
 };
 
 /**
@@ -876,13 +883,45 @@ function BrainFormModal({
             />
           </Field>
 
-          <Field label="Category" hint="Leave blank to allow every category.">
+          <Field
+            label="Category"
+            hint="Leave blank to allow every category."
+          >
             <input
               value={draft.category}
               onChange={(e) => setDraft({ ...draft, category: e.target.value })}
               placeholder="coding / analysis / review"
               className="h-8 rounded-md border border-border bg-background px-2 text-xs outline-none focus:ring-1 focus:ring-ring"
             />
+          </Field>
+
+          {/* D51: the reset schedule decides what a quota refusal MEANS — a
+              per-minute window is retried in place (up to 10×), a 5-hour one
+              parks with an ETA. Providers have families of windows, so the
+              operator sees the two that actually exist. */}
+          <Field
+            label="Quota reset (short)"
+            hint="The window the scheduler waits out on a quota refusal. Per-minute windows retry the task automatically, up to 10 times."
+          >
+            <Select
+              value={draft.quotaResetShortMs}
+              onChange={(v) => setDraft({ ...draft, quotaResetShortMs: v })}
+            >
+              <option value="">(default by provider)</option>
+              <option value="60000">per-minute</option>
+              <option value="18000000">5-hour</option>
+            </Select>
+          </Field>
+
+          <Field label="Quota reset (long)">
+            <Select
+              value={draft.quotaResetLongMs}
+              onChange={(v) => setDraft({ ...draft, quotaResetLongMs: v })}
+            >
+              <option value="">(default by provider)</option>
+              <option value="86400000">daily</option>
+              <option value="604800000">weekly</option>
+            </Select>
           </Field>
 
           <Field label="Description">
@@ -1011,6 +1050,8 @@ export function SemanggiBrainsPanel() {
           category: brain.category ?? "",
           description: brain.description ?? "",
           enabled: brain.enabled,
+          quotaResetShortMs: brain.quotaResetShortMs != null ? String(brain.quotaResetShortMs) : "",
+          quotaResetLongMs: brain.quotaResetLongMs != null ? String(brain.quotaResetLongMs) : "",
         }
       : EMPTY_DRAFT;
 
@@ -1022,6 +1063,10 @@ export function SemanggiBrainsPanel() {
       effortEvidence: draft.effortEvidence || null,
       mode: draft.mode,
       acpAgent: draft.acpAgent || null,
+      // "" stays absent on create so the server applies the provider default —
+      // the source of truth for "which family of windows" lives there.
+      quotaResetShortMs: draft.quotaResetShortMs ? Number(draft.quotaResetShortMs) : undefined,
+      quotaResetLongMs: draft.quotaResetLongMs ? Number(draft.quotaResetLongMs) : undefined,
     });
     await reload();
   };
@@ -1037,6 +1082,10 @@ export function SemanggiBrainsPanel() {
       enabled: draft.enabled,
       mode: draft.mode,
       acpAgent: draft.acpAgent || null,
+      // Same rule as create: an untouched select leaves the stored window
+      // alone instead of silently rewriting it to the provider default.
+      quotaResetShortMs: draft.quotaResetShortMs ? Number(draft.quotaResetShortMs) : undefined,
+      quotaResetLongMs: draft.quotaResetLongMs ? Number(draft.quotaResetLongMs) : undefined,
     });
     await reload();
   };
@@ -1061,7 +1110,7 @@ export function SemanggiBrainsPanel() {
             <table className="w-full text-left text-xs">
               <thead className="bg-muted/50">
                 <tr>
-                  {["Name", "Model", "Effort", "Level", "Category", "Availability", ""].map((h) => (
+                  {["Name", "Model", "Effort", "Level", "Category", "Availability", "Quota", ""].map((h) => (
                     <th key={h} className="px-2 py-1 font-medium">
                       {h}
                     </th>
@@ -1107,6 +1156,23 @@ export function SemanggiBrainsPanel() {
                     <td className="px-2 py-1 text-muted-foreground">{brain.category ?? "—"}</td>
                     <td className="px-2 py-1">
                       <Badge tone={brain.availability === "AVAILABLE" ? "success" : "neutral"}>{brain.availability ?? "UNKNOWN"}</Badge>
+                    </td>
+                    <td className="px-2 py-1">
+                      {brain.quotaReset?.shortLabel || brain.quotaReset?.longLabel ? (
+                        <div className="flex flex-col gap-0.5">
+                          <span>{[brain.quotaReset.shortLabel, brain.quotaReset.longLabel].filter(Boolean).join(" · ")}</span>
+                          {brain.quotaReset.autoRetry ? (
+                            <Badge
+                              tone="success"
+                              title={`A quota refusal parks the task for one short window and retries automatically, up to ${brain.quotaReset.retryLimit} times, before blocking.`}
+                            >
+                              auto-retry ×{brain.quotaReset.retryLimit}
+                            </Badge>
+                          ) : null}
+                        </div>
+                      ) : (
+                        <span className="text-muted-foreground">—</span>
+                      )}
                     </td>
                     <td className="px-2 py-1">
                       <div className="flex items-center justify-end gap-2">

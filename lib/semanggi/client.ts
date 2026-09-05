@@ -17,11 +17,23 @@ export type Brain = {
   effortEvidence: string | null;
   mode: string;
   acpAgent: string | null;
+  quotaResetShortMs?: number | null;
+  quotaResetLongMs?: number | null;
   level: Level;
   category: string | null;
   enabled: boolean;
   availability?: string;
   nextAvailableAt?: number | null;
+  /** Server-derived view of the two windows (D51) — what the scheduler will
+   *  actually do, so the panel never has to re-derive policy from raw ms. */
+  quotaReset?: {
+    shortMs: number | null;
+    longMs: number | null;
+    shortLabel: string | null;
+    longLabel: string | null;
+    autoRetry: boolean;
+    retryLimit: number;
+  } | null;
 };
 
 export type RoleLevels = {
