@@ -70,6 +70,19 @@ export function TaskDialog({
   const [model, setModel] = useState("");
   const [confirmCancel, setConfirmCancel] = useState("");
   const [sidePanel, setSidePanel] = useState<SidePanelState>(null);
+  // Transcript-tab floating actions share the execution panel's contract
+  // (refresh reloads the transcript, the arrow appears only while the tab's
+  // content overflows) — but they scroll THIS dialog's own scroll region,
+  // because the Transcript tab lives in the modal body, not in a side panel.
+  const mainScrollRef = useRef<HTMLDivElement>(null);
+  const [transcriptOverflowing, setTranscriptOverflowing] = useState(false);
+  const checkTranscriptOverflow = useCallback(() => {
+    const el = mainScrollRef.current;
+    setTranscriptOverflowing(el ? el.scrollHeight > el.clientHeight + 8 : false);
+  }, []);
+  useEffect(() => {
+    checkTranscriptOverflow();
+  }, [tab, turns, checkTranscriptOverflow]);
 
   const load = useCallback(async () => {
     try {
@@ -172,7 +185,7 @@ export function TaskDialog({
           </button>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+        <div ref={mainScrollRef} onScroll={checkTranscriptOverflow} className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
           <div className="space-y-4">
             {error ? <LoadError error={error} onRetry={load} /> : null}
 
@@ -267,6 +280,36 @@ export function TaskDialog({
             ) : null}
           </div>
         </div>
+
+        {/* Transcript-tab twins of the execution panel's floating actions:
+            same contract (refresh reloads the transcript; the arrow appears
+            only while content overflows), shown only on this tab — other
+            tabs have no live conversation worth jumping to the end of. */}
+        {tab === "transcript" ? (
+          <div className="absolute bottom-4 right-5 z-20 flex items-center gap-2">
+            <button
+              type="button"
+              title="Reload the latest transcript"
+              onClick={loadTranscript}
+              className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-border bg-background/90 text-muted-foreground shadow-md backdrop-blur transition-colors hover:bg-accent hover:text-foreground"
+            >
+              <RefreshCw className="h-4 w-4" />
+            </button>
+            {transcriptOverflowing ? (
+              <button
+                type="button"
+                title="Jump to the latest message"
+                onClick={() => {
+                  const el = mainScrollRef.current;
+                  if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+                }}
+                className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-border bg-background/90 text-muted-foreground shadow-md backdrop-blur transition-colors hover:bg-accent hover:text-foreground"
+              >
+                <ArrowDown className="h-4 w-4" />
+              </button>
+            ) : null}
+          </div>
+        ) : null}
 
         <DetailSidePanel panel={sidePanel} turns={pairedTurns} onClose={() => setSidePanel(null)} onRefresh={loadTranscript} />
       </div>
