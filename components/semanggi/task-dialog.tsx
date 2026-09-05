@@ -24,7 +24,7 @@
 // language is worth matching, the code isn't worth coupling to.
 
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { X } from "lucide-react";
+import { ChevronRight, X } from "lucide-react";
 import {
   semanggi,
   relativeTime,
@@ -130,6 +130,12 @@ export function TaskDialog({
   const task = detail?.task;
   const pendingApprovals = (detail?.approvals ?? []).filter((a) => !a.decision);
 
+  // Tool results arrive as separate turns AFTER the assistant turn that asked
+  // for them; pairing them into their call is what lets the conversation show
+  // one region per action (call + what came back) instead of two interleaved
+  // streams the reader has to correlate by hand.
+  const pairedTurns = useMemo(() => pairToolResults(turns), [turns]);
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/70 p-3 backdrop-blur-lg sm:p-6"
@@ -219,7 +225,7 @@ export function TaskDialog({
             {tab === "timeline" ? (
               <Timeline events={events} onOpenEvent={(event) => setSidePanel({ kind: "timeline", event })} />
             ) : null}
-            {tab === "transcript" ? <Transcript turns={turns} /> : null}
+            {tab === "transcript" ? <Transcript turns={pairedTurns} /> : null}
 
             {/* Once a task is COMPLETE or CANCELLED there is nothing left an
                 operator can still do to it, and a comment box that's still
@@ -257,7 +263,7 @@ export function TaskDialog({
           </div>
         </div>
 
-        <DetailSidePanel panel={sidePanel} turns={turns} onClose={() => setSidePanel(null)} />
+        <DetailSidePanel panel={sidePanel} turns={pairedTurns} onClose={() => setSidePanel(null)} />
       </div>
     </div>
   );
@@ -766,6 +772,74 @@ function TimelineDetail({ event }: { event: WorkEvent }) {
 }
 
 /**
+ * Merges every toolResult turn into the toolCall block it answers, dropping
+ * the now-empty turn.
+ *
+ * The gateway's result frames carry NO call id (measured on the pinned
+ * 2026.7.1 wire — `recordToolResult` in session-events.mjs keeps only
+ * name/meta/isError/exitCode/durationMs/text), so pairing is FIFO per tool
+ * name within one execution. The queue resets whenever executionId changes:
+ * a revision 2 call must never swallow a revision 1 result that never
+ * matched. A result with no pending call stays visible as its own turn
+ * rather than vanishing — §8.7 again, a block that silently disappears is
+ * easy to mistake for one that never happened.
+ */
+function pairToolResults(turns: TranscriptTurn[]): TranscriptTurn[] {
+  const pending = new Map<string, TranscriptBlock[]>();
+  let currentExecution: string | undefined;
+  const paired: TranscriptTurn[] = [];
+  for (const turn of turns) {
+    if (turn.executionId !== currentExecution) {
+      pending.clear();
+      currentExecution = turn.executionId;
+    }
+    if (turn.role !== "toolResult" || !turn.blocks) {
+      // Copy the blocks before queuing them: attaching a result mutates the
+      // block, and mutating the raw state object would leak the merge into
+      // every other render of these turns.
+      const blocks = turn.blocks ? turn.blocks.map((block) => ({ ...block })) : turn.blocks;
+      for (const block of blocks ?? []) {
+        if (block.type === "toolCall" && block.name) {
+          const queue = pending.get(block.name) ?? [];
+          queue.push(block);
+          pending.set(block.name, queue);
+        }
+      }
+      paired.push(blocks ? { ...turn, blocks } : turn);
+      continue;
+    }
+    const remaining: TranscriptBlock[] = [];
+    for (const block of turn.blocks) {
+      if (block.type !== "toolResult") {
+        remaining.push(block);
+        continue;
+      }
+      const call = block.name ? pending.get(block.name)?.shift() : undefined;
+      if (call) call.result = block;
+      else remaining.push(block);
+    }
+    if (remaining.length > 0) paired.push({ ...turn, blocks: remaining });
+  }
+  return paired;
+}
+
+/**
+ * Brains on this gateway wrap their answer in <final>…</final>. The wrapper
+ * is wire vocabulary, not content — an operator reading the transcript wants
+ * what's inside, without the tag.
+ */
+function stripFinal(text: string): string {
+  const match = /<final>([\s\S]*?)<\/final>/.exec(text);
+  return (match ? match[1] : text).trim();
+}
+
+function formatDuration(ms: number): string {
+  if (ms < 1_000) return `${ms} ms`;
+  if (ms < 60_000) return `${(ms / 1_000).toFixed(1)} s`;
+  return `${Math.round(ms / 60_000)} min`;
+}
+
+/**
  * The gateway's role vocabulary is wire-shaped (toolResult, assistant); the
  * transcript is read by people, so each role gets a readable label instead of
  * a capitalized identifier.
@@ -794,7 +868,12 @@ function roleLabel(role: string): string {
  */
 function BlockList({ blocks, fallbackText, role }: { blocks: TranscriptBlock[] | null; fallbackText: string; role?: string }) {
   if (!blocks || blocks.length === 0) {
-    return fallbackText ? <p className="whitespace-pre-wrap text-sm leading-relaxed">{fallbackText}</p> : null;
+    // The flattened fallback of an assistant turn can still carry the
+    // <final> wrapper; an operator's or tool's flattened text never does.
+    const body = role === "assistant" ? stripFinal(fallbackText) : fallbackText;
+    if (!body) return null;
+    if (role === "assistant") return <Markdownish text={body} />;
+    return <p className="whitespace-pre-wrap text-sm leading-relaxed">{body}</p>;
   }
   return (
     <div className="space-y-1.5">
@@ -842,10 +921,12 @@ function TranscriptBlockView({ block, role }: { block: TranscriptBlock; role?: s
         </div>
       );
     }
+    const body = stripFinal(block.text ?? "");
+    if (!body) return null;
     return (
       <div className="rounded-lg border border-border bg-card px-3 py-2">
         <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Response</div>
-        <p className="whitespace-pre-wrap text-sm leading-relaxed">{block.text}</p>
+        <Markdownish text={body} />
       </div>
     );
   }
@@ -862,40 +943,7 @@ function TranscriptBlockView({ block, role }: { block: TranscriptBlock; role?: s
   }
 
   if (block.type === "toolCall") {
-    const args = block.arguments ?? {};
-    const command = typeof args.command === "string" ? args.command : null;
-    const filePath =
-      typeof args.path === "string" ? args.path : typeof args.file_path === "string" ? (args.file_path as string) : null;
-    const rest = Object.entries(args).filter(([key]) => key !== "command" && key !== "path" && key !== "file_path");
-    return (
-      <div className="rounded-lg border border-sky-500/30 bg-sky-500/5 px-3 py-2">
-        <div className="mb-1.5 flex flex-wrap items-center gap-2 text-[10px] font-medium uppercase tracking-wide text-sky-700 dark:text-sky-300">
-          <span>Tool call</span>
-          <code className="rounded bg-sky-500/15 px-1.5 py-0.5 normal-case text-[11px] text-sky-800 dark:text-sky-200">
-            {block.name ?? "?"}
-          </code>
-          {filePath ? <span className="normal-case text-muted-foreground">{filePath}</span> : null}
-        </div>
-        {command ? (
-          <pre className="overflow-x-auto rounded-md bg-muted px-2 py-1.5 font-mono text-[11px]">{command}</pre>
-        ) : null}
-        {rest.length > 0 ? (
-          <dl className="mt-1.5 space-y-0.5 text-[11px]">
-            {rest.map(([key, value]) => {
-              const rendered = typeof value === "string" ? value : JSON.stringify(value);
-              return (
-                <div key={key} className="flex gap-2">
-                  <dt className="shrink-0 text-muted-foreground">{key}</dt>
-                  <dd className="min-w-0 truncate font-mono" title={rendered}>
-                    {rendered}
-                  </dd>
-                </div>
-              );
-            })}
-          </dl>
-        ) : null}
-      </div>
-    );
+    return <ToolCallView block={block} />;
   }
 
   // An unrecognised block type — the gateway may add ones this UI doesn't
@@ -907,4 +955,246 @@ function TranscriptBlockView({ block, role }: { block: TranscriptBlock; role?: s
       <pre className="overflow-x-auto whitespace-pre-wrap text-[11px] text-muted-foreground">{JSON.stringify(block, null, 2)}</pre>
     </div>
   );
+}
+
+/** Wire tool names → the verb an operator actually thinks in. */
+const TOOL_VERB: Record<string, string> = { exec: "Exec", read: "Read", write: "Write" };
+
+/**
+ * One collapsed region per tool action: the call (command, file, content)
+ * above a delimiter and what came back below it.
+ *
+ * Collapsed by default because a long execution is dozens of these and the
+ * two things an operator scans for — which command ran, did it fail — are
+ * both in the header: the verb and path on the left, exit code and duration
+ * on the right. The body is only worth opening to read output or review a
+ * write.
+ */
+function ToolCallView({ block }: { block: TranscriptBlock }) {
+  const name = typeof block.name === "string" ? block.name : "?";
+  const args = block.arguments ?? {};
+  const command = typeof args.command === "string" ? args.command : null;
+  const path =
+    typeof args.path === "string" ? args.path : typeof args.file_path === "string" ? (args.file_path as string) : null;
+  // Write content is the payload being written — the one argument worth
+  // reading in full, multiline, rather than as a truncated key/value row.
+  const content = typeof args.content === "string" ? args.content : null;
+  const rest = Object.entries(args).filter(
+    ([key]) => !["command", "path", "file_path", "content"].includes(key),
+  );
+  const result = (block.result as TranscriptBlock | undefined) ?? undefined;
+  const exit = typeof result?.exitCode === "number" ? result.exitCode : null;
+  const duration = typeof result?.durationMs === "number" ? result.durationMs : null;
+
+  return (
+    <details className="group rounded-lg border border-sky-500/30 bg-sky-500/5 px-3 py-2">
+      <summary className="flex cursor-pointer list-none flex-wrap items-center gap-2 text-[10px] font-medium uppercase tracking-wide text-sky-700 dark:text-sky-300 [&::-webkit-details-marker]:hidden">
+        <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" />
+        <span>{TOOL_VERB[name] ?? name}</span>
+        {path ? (
+          <code className="truncate normal-case text-[11px] text-muted-foreground" title={path}>
+            {path}
+          </code>
+        ) : null}
+        {exit !== null ? (
+          <code className="rounded bg-amber-500/15 px-1.5 py-0.5 normal-case text-[10px] text-amber-700 dark:text-amber-300">
+            exit {exit}
+          </code>
+        ) : null}
+        {duration !== null ? <span className="ml-auto normal-case text-muted-foreground">{formatDuration(duration)}</span> : null}
+      </summary>
+      <div className="mt-2 space-y-2">
+        {command ? (
+          <pre className="overflow-x-auto whitespace-pre-wrap rounded-md bg-zinc-900 px-2.5 py-2 font-mono text-[11px] leading-relaxed text-zinc-100">
+            {command}
+          </pre>
+        ) : null}
+        {content ? (
+          <pre className="overflow-x-auto whitespace-pre-wrap rounded-md border border-border bg-muted px-2.5 py-2 font-mono text-[11px] leading-relaxed">
+            {content}
+          </pre>
+        ) : null}
+        {rest.length > 0 ? (
+          <dl className="space-y-0.5 text-[11px]">
+            {rest.map(([key, value]) => {
+              const rendered = typeof value === "string" ? value : JSON.stringify(value);
+              return (
+                <div key={key} className="flex gap-2">
+                  <dt className="shrink-0 text-muted-foreground">{key}</dt>
+                  <dd className="min-w-0 font-mono" title={rendered}>
+                    {rendered}
+                  </dd>
+                </div>
+              );
+            })}
+          </dl>
+        ) : null}
+        {result ? (
+          <>
+            <div className="border-t border-dashed border-border" />
+            <ToolResultBody name={name} result={result} />
+          </>
+        ) : null}
+      </div>
+    </details>
+  );
+}
+
+/**
+ * What a tool printed, in the shape it was printed in: shell output reads as
+ * a terminal, file contents and model-shaped text read as prose. Only the
+ * `text` field is shown — exit, duration and failure state live in the
+ * region's header, and anything else is wire bookkeeping.
+ *
+ * A failed call gets the red treatment (transparent fill, red border): when
+ * scanning a transcript, the failed command is the one thing that must not
+ * look identical to everything around it.
+ */
+function ToolResultBody({ name, result }: { name: string; result: TranscriptBlock }) {
+  const failed = result.isError === true;
+  const text = typeof result.text === "string" ? result.text : "";
+  if (!text) return null;
+  return (
+    <div className={failed ? "rounded-md border border-red-500/50 bg-red-500/10 px-2.5 py-2" : ""}>
+      {name === "exec" ? (
+        <pre
+          className={`overflow-x-auto whitespace-pre-wrap rounded-md bg-zinc-900 px-2.5 py-2 font-mono text-[11px] leading-relaxed ${
+            failed ? "text-red-300" : "text-zinc-100"
+          }`}
+        >
+          {text}
+        </pre>
+      ) : (
+        <Markdownish text={text} className={failed ? "text-red-700 dark:text-red-300" : undefined} />
+      )}
+    </div>
+  );
+}
+
+/**
+ * Markdown, enough of it to read a transcript — no dependency.
+ *
+ * The fork ships no markdown renderer and pulling one in would add a package
+ * upstream doesn't carry, which is exactly the rebase tax this component
+ * tree exists to avoid. What brains actually write — headings, lists, code
+ * fences, inline code, bold, links — fits in this box; anything else falls
+ * through as plain paragraphs instead of disappearing.
+ */
+function Markdownish({ text, className = "" }: { text: string; className?: string }) {
+  const lines = text.replace(/\r\n/g, "\n").split("\n");
+  const isBlockStart = (line: string) =>
+    line.startsWith("```") || /^#{1,4}\s/.test(line) || /^\s*[-*]\s+/.test(line) || /^\s*\d+\.\s+/.test(line);
+  const blocks: ReactNode[] = [];
+  let i = 0;
+  let key = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (!line.trim()) {
+      i += 1;
+      continue;
+    }
+    if (line.startsWith("```")) {
+      const body: string[] = [];
+      i += 1;
+      while (i < lines.length && !lines[i].startsWith("```")) {
+        body.push(lines[i]);
+        i += 1;
+      }
+      i += 1;
+      blocks.push(
+        <pre key={key++} className="overflow-x-auto rounded-md bg-muted px-2.5 py-2 font-mono text-[11px] leading-relaxed">
+          {body.join("\n")}
+        </pre>,
+      );
+      continue;
+    }
+    const heading = /^(#{1,4})\s+(.*)$/.exec(line);
+    if (heading) {
+      blocks.push(
+        <div key={key++} className={heading[1].length <= 2 ? "text-sm font-semibold" : "text-xs font-semibold uppercase tracking-wide"}>
+          {renderInline(heading[2], `h${key}`)}
+        </div>,
+      );
+      i += 1;
+      continue;
+    }
+    if (/^\s*[-*]\s+/.test(line)) {
+      const items: string[] = [];
+      while (i < lines.length && /^\s*[-*]\s+/.test(lines[i])) {
+        items.push(lines[i].replace(/^\s*[-*]\s+/, ""));
+        i += 1;
+      }
+      blocks.push(
+        <ul key={key++} className="list-disc space-y-0.5 pl-5">
+          {items.map((item, idx) => (
+            <li key={idx}>{renderInline(item, `ul${key}-${idx}`)}</li>
+          ))}
+        </ul>,
+      );
+      continue;
+    }
+    if (/^\s*\d+\.\s+/.test(line)) {
+      const items: string[] = [];
+      while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) {
+        items.push(lines[i].replace(/^\s*\d+\.\s+/, ""));
+        i += 1;
+      }
+      blocks.push(
+        <ol key={key++} className="list-decimal space-y-0.5 pl-5">
+          {items.map((item, idx) => (
+            <li key={idx}>{renderInline(item, `ol${key}-${idx}`)}</li>
+          ))}
+        </ol>,
+      );
+      continue;
+    }
+    const paragraph: string[] = [line];
+    i += 1;
+    while (i < lines.length && lines[i].trim() && !isBlockStart(lines[i])) {
+      paragraph.push(lines[i]);
+      i += 1;
+    }
+    blocks.push(<p key={key++}>{renderInline(paragraph.join(" "), `p${key}`)}</p>);
+  }
+  return <div className={`space-y-2 text-sm leading-relaxed ${className}`}>{blocks}</div>;
+}
+
+function renderInline(text: string, keyBase: string): ReactNode[] {
+  const nodes: ReactNode[] = [];
+  const pattern = /(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^*]+\*)|\[([^\]]+)\]\(([^)]+)\)/g;
+  let cursor = 0;
+  let seq = 0;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(text)) !== null) {
+    if (match.index > cursor) nodes.push(text.slice(cursor, match.index));
+    const [token] = match;
+    if (token.startsWith("`")) {
+      nodes.push(
+        <code key={`${keyBase}-c${seq++}`} className="rounded bg-muted px-1 py-0.5 font-mono text-[11px]">
+          {token.slice(1, -1)}
+        </code>,
+      );
+    } else if (token.startsWith("**")) {
+      nodes.push(
+        <strong key={`${keyBase}-b${seq++}`} className="font-semibold">
+          {token.slice(2, -2)}
+        </strong>,
+      );
+    } else if (token.startsWith("[")) {
+      nodes.push(
+        <a key={`${keyBase}-a${seq++}`} href={match[5]} className="underline underline-offset-2">
+          {match[4]}
+        </a>,
+      );
+    } else {
+      nodes.push(
+        <em key={`${keyBase}-i${seq++}`} className="italic">
+          {token.slice(1, -1)}
+        </em>,
+      );
+    }
+    cursor = match.index + token.length;
+  }
+  if (cursor < text.length) nodes.push(text.slice(cursor));
+  return nodes;
 }
