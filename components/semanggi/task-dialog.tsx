@@ -886,39 +886,48 @@ function BlockList({ blocks, fallbackText, role }: { blocks: TranscriptBlock[] |
 
 function TranscriptBlockView({ block, role }: { block: TranscriptBlock; role?: string }) {
   if (block.type === "toolResult") {
-    // What a tool actually printed — shell output, exit codes, write
-    // confirmations. Red when the tool failed, because a failed command is
-    // exactly what a reader scanning the transcript must not miss.
-    const failed = block.isError === true;
+    // A result that never paired with a call (the gateway dropped the
+    // assistant turn, or the call predates pairing) still gets the same
+    // collapsible region treatment as a merged result — same shell, same
+    // header vocabulary, titled "Output <name>" so the pair reads as
+    // "Call X" / "Output X" when both are visible.
+    const name = typeof block.name === "string" ? block.name : null;
+    const exit = typeof block.exitCode === "number" ? block.exitCode : null;
+    const duration = typeof block.durationMs === "number" ? block.durationMs : null;
     return (
-      <div className={`rounded-lg border px-3 py-2 ${failed ? "border-red-500/40 bg-red-500/5" : "border-emerald-500/30 bg-emerald-500/5"}`}>
-        <div className={`mb-1 flex flex-wrap items-center gap-2 text-[10px] font-medium uppercase tracking-wide ${failed ? "text-red-700 dark:text-red-300" : "text-emerald-700 dark:text-emerald-300"}`}>
-          <span>Tool output</span>
-          {typeof block.name === "string" ? (
-            <code className={`rounded px-1.5 py-0.5 normal-case text-[11px] ${failed ? "bg-red-500/15 text-red-800 dark:text-red-200" : "bg-emerald-500/15 text-emerald-800 dark:text-emerald-200"}`}>
-              {block.name}
-            </code>
-          ) : null}
-          {typeof block.meta === "string" ? <span className="normal-case text-muted-foreground">{block.meta}</span> : null}
-          {typeof block.exitCode === "number" ? <span className="normal-case text-muted-foreground">exit {block.exitCode}</span> : null}
-        </div>
-        {typeof block.text === "string" && block.text.length > 0 ? (
-          <pre className="overflow-x-auto whitespace-pre-wrap font-mono text-[11px] leading-relaxed">{block.text}</pre>
-        ) : null}
-      </div>
+      <TranscriptRegion
+        title={
+          <>
+            <span>Output</span>
+            {name ? <code className="rounded bg-sky-500/15 px-1.5 py-0.5 normal-case text-[11px] text-sky-800 dark:text-sky-200">{name}</code> : null}
+          </>
+        }
+        right={
+          <>
+            {exit !== null ? (
+              <code className="rounded bg-amber-500/15 px-1.5 py-0.5 normal-case text-[10px] text-amber-700 dark:text-amber-300">
+                exit {exit}
+              </code>
+            ) : null}
+            {duration !== null ? <span className="normal-case text-muted-foreground">{formatDuration(duration)}</span> : null}
+          </>
+        }
+      >
+        <ToolResultBody name={name ?? ""} result={block} />
+      </TranscriptRegion>
     );
   }
 
   if (block.type === "text") {
     // A text block inside a toolResult turn is what a tool printed — shell
     // output, a file listing, a diff — not something the model said. Labeling
-    // it "Response" would read the transcript backwards.
+    // it "Response" would read the transcript backwards. Same collapsible
+    // shell as the block-shaped results above, for the same reason.
     if (role === "toolResult") {
       return (
-        <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 px-3 py-2">
-          <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-emerald-700 dark:text-emerald-300">Tool output</div>
-          <pre className="overflow-x-auto whitespace-pre-wrap font-mono text-[11px] leading-relaxed">{block.text}</pre>
-        </div>
+        <TranscriptRegion title={<span>Output</span>}>
+          <ToolResultBody name="" result={block} />
+        </TranscriptRegion>
       );
     }
     const body = stripFinal(block.text ?? "");
@@ -957,8 +966,32 @@ function TranscriptBlockView({ block, role }: { block: TranscriptBlock; role?: s
   );
 }
 
-/** Wire tool names → the verb an operator actually thinks in. */
-const TOOL_VERB: Record<string, string> = { exec: "Exec", read: "Read", write: "Write" };
+/**
+ * Wire tool names → the label an operator actually reads. Exec is "Call
+ * Exec" (not just "Exec") so the pair with its result region — "Output
+ * exec" — reads unambiguously when both sit in one transcript; Read/Write
+ * keep the bare verb.
+ */
+const TOOL_VERB: Record<string, string> = { exec: "Call Exec", read: "Read", write: "Write" };
+
+/**
+ * The shared collapsible shell for tool call and tool output regions: same
+ * border, same header rhythm (chevron, title, badges pushed right), same
+ * collapsed-by-default behavior — so a transcript reads as one consistent
+ * stack of actions instead of two different shapes of box.
+ */
+function TranscriptRegion({ title, right, children }: { title: ReactNode; right?: ReactNode; children: ReactNode }) {
+  return (
+    <details className="group rounded-lg border border-sky-500/30 bg-sky-500/5 px-3 py-2">
+      <summary className="flex cursor-pointer list-none flex-wrap items-center gap-2 text-[10px] font-medium uppercase tracking-wide text-sky-700 dark:text-sky-300 [&::-webkit-details-marker]:hidden">
+        <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" />
+        {title}
+        {right ? <span className="ml-auto flex items-center gap-2 normal-case">{right}</span> : null}
+      </summary>
+      <div className="mt-2 space-y-2">{children}</div>
+    </details>
+  );
+}
 
 /**
  * One collapsed region per tool action: the call (command, file, content)
@@ -987,56 +1020,60 @@ function ToolCallView({ block }: { block: TranscriptBlock }) {
   const duration = typeof result?.durationMs === "number" ? result.durationMs : null;
 
   return (
-    <details className="group rounded-lg border border-sky-500/30 bg-sky-500/5 px-3 py-2">
-      <summary className="flex cursor-pointer list-none flex-wrap items-center gap-2 text-[10px] font-medium uppercase tracking-wide text-sky-700 dark:text-sky-300 [&::-webkit-details-marker]:hidden">
-        <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" />
-        <span>{TOOL_VERB[name] ?? name}</span>
-        {path ? (
-          <code className="truncate normal-case text-[11px] text-muted-foreground" title={path}>
-            {path}
-          </code>
-        ) : null}
-        {exit !== null ? (
-          <code className="rounded bg-amber-500/15 px-1.5 py-0.5 normal-case text-[10px] text-amber-700 dark:text-amber-300">
-            exit {exit}
-          </code>
-        ) : null}
-        {duration !== null ? <span className="ml-auto normal-case text-muted-foreground">{formatDuration(duration)}</span> : null}
-      </summary>
-      <div className="mt-2 space-y-2">
-        {command ? (
-          <pre className="overflow-x-auto whitespace-pre-wrap rounded-md bg-zinc-900 px-2.5 py-2 font-mono text-[11px] leading-relaxed text-zinc-100">
-            {command}
-          </pre>
-        ) : null}
-        {content ? (
-          <pre className="overflow-x-auto whitespace-pre-wrap rounded-md border border-border bg-muted px-2.5 py-2 font-mono text-[11px] leading-relaxed">
-            {content}
-          </pre>
-        ) : null}
-        {rest.length > 0 ? (
-          <dl className="space-y-0.5 text-[11px]">
-            {rest.map(([key, value]) => {
-              const rendered = typeof value === "string" ? value : JSON.stringify(value);
-              return (
-                <div key={key} className="flex gap-2">
-                  <dt className="shrink-0 text-muted-foreground">{key}</dt>
-                  <dd className="min-w-0 font-mono" title={rendered}>
-                    {rendered}
-                  </dd>
-                </div>
-              );
-            })}
-          </dl>
-        ) : null}
-        {result ? (
-          <>
-            <div className="border-t border-dashed border-border" />
-            <ToolResultBody name={name} result={result} />
-          </>
-        ) : null}
-      </div>
-    </details>
+    <TranscriptRegion
+      title={
+        <>
+          <span>{TOOL_VERB[name] ?? name}</span>
+          {path ? (
+            <code className="truncate normal-case text-[11px] text-muted-foreground" title={path}>
+              {path}
+            </code>
+          ) : null}
+        </>
+      }
+      right={
+        <>
+          {exit !== null ? (
+            <code className="rounded bg-amber-500/15 px-1.5 py-0.5 normal-case text-[10px] text-amber-700 dark:text-amber-300">
+              exit {exit}
+            </code>
+          ) : null}
+          {duration !== null ? <span className="normal-case text-muted-foreground">{formatDuration(duration)}</span> : null}
+        </>
+      }
+    >
+      {command ? (
+        <pre className="overflow-x-auto whitespace-pre-wrap rounded-md bg-zinc-900 px-2.5 py-2 font-mono text-[11px] leading-relaxed text-zinc-100">
+          {command}
+        </pre>
+      ) : null}
+      {content ? (
+        <pre className="overflow-x-auto whitespace-pre-wrap rounded-md border border-border bg-muted px-2.5 py-2 font-mono text-[11px] leading-relaxed">
+          {content}
+        </pre>
+      ) : null}
+      {rest.length > 0 ? (
+        <dl className="space-y-0.5 text-[11px]">
+          {rest.map(([key, value]) => {
+            const rendered = typeof value === "string" ? value : JSON.stringify(value);
+            return (
+              <div key={key} className="flex gap-2">
+                <dt className="shrink-0 text-muted-foreground">{key}</dt>
+                <dd className="min-w-0 font-mono" title={rendered}>
+                  {rendered}
+                </dd>
+              </div>
+            );
+          })}
+        </dl>
+      ) : null}
+      {result ? (
+        <>
+          <div className="border-t border-dashed border-border" />
+          <ToolResultBody name={name} result={result} />
+        </>
+      ) : null}
+    </TranscriptRegion>
   );
 }
 
