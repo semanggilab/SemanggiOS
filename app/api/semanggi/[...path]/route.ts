@@ -64,6 +64,12 @@ const ALLOWED: Array<{ method: string; pattern: RegExp }> = [
   { method: "PUT", pattern: /^work\/projects\/[A-Za-z0-9_-]+\/role-levels$/ },
   { method: "GET", pattern: /^work\/projects\/[A-Za-z0-9_-]+\/docs$/ },
   { method: "GET", pattern: /^work\/projects\/[A-Za-z0-9_-]+\/docs\/[a-z-]+$/ },
+  // Edit/Save modal Command Center (D55): route PUT controller sudah ada sejak
+  // 2026-09-06, tapi tanpa entri ini setiap simpan gagal 404 "does not expose
+  // PUT" — kegagalan kedua dari jenis yang sama setelah role-levels
+  // (readiness.md). Route controller baru belum nyata bagi halaman sampai ia
+  // terdaftar di sini.
+  { method: "PUT", pattern: /^work\/projects\/[A-Za-z0-9_-]+\/docs\/[a-z-]+$/ },
   { method: "GET", pattern: /^work\/gateway\/(models|thinking-levels)$/ },
   { method: "POST", pattern: /^work\/gateway\/models\/refresh$/ },
   { method: "POST", pattern: /^work\/gateway\/thinking-levels\/refresh$/ },

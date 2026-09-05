@@ -224,12 +224,18 @@ export function Button({
 export function Modal({
   title,
   subtitle,
+  actions,
   onClose,
   children,
   width = "max-w-2xl",
 }: {
   title: ReactNode;
   subtitle?: ReactNode;
+  // Rendered inline NEXT TO the title, not on the right edge: an action that
+  // belongs to the thing named in the title (DocModal's Edit/Save acts on the
+  // document the title names) should sit with it. A button floated in the
+  // body instead moved between read and edit mode and read as page chrome.
+  actions?: ReactNode;
   onClose: () => void;
   children: ReactNode;
   width?: string;
@@ -261,8 +267,11 @@ export function Modal({
         onClick={(event) => event.stopPropagation()}
       >
         <div className="flex items-start justify-between gap-4 border-b border-border px-5 py-4">
-          <div>
-            <h2 className="text-lg font-semibold">{title}</h2>
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+              <h2 className="text-lg font-semibold">{title}</h2>
+              {actions ? <div className="flex shrink-0 items-center gap-2">{actions}</div> : null}
+            </div>
             {subtitle ? <p className="mt-1 text-xs text-muted-foreground">{subtitle}</p> : null}
           </div>
           <Button variant="ghost" size="sm" onClick={onClose}>

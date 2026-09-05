@@ -536,7 +536,11 @@ function DocPill({ doc, onOpen }: { doc: ProjectDocStatus; onOpen: () => void })
  * the operator was shown, not what they hope they typed. Save hides the
  * editor and restores the reader; the button pair is mutually exclusive
  * because "Edit" while already editing is a no-op and "Save" while reading
- * has nothing to save.
+ * has nothing to save. The pair is rendered in the modal header next to the
+ * title (Modal's `actions`): it belongs to the document being viewed, and
+ * floating it above the content made it shift position on every mode swap.
+ * The two split panes scroll in lockstep (proportional sync) so the preview
+ * keeps showing the region being edited instead of drifting away from it.
  *
  * A missing plans/tasks document gets the same bootstrap button the chat
  * empty state offers (`createAction`); the modal's OWN fetched existence is
@@ -575,6 +579,46 @@ function DocModal({
   // button never appears for them either. The reader stays for both dirs.
   const [dir, setDir] = useState<string | null>(null);
   const editable = dir === "docs";
+
+  // Lockstep scrolling for the edit split. The sync is PROPORTIONAL — each
+  // pane's scrollTop as a fraction of its own scrollable range — because the
+  // rendered markdown is never the same height as its source (tables,
+  // headings, spacing), so line-for-line mapping would drift on the first
+  // construct. Writing the other pane's scrollTop fires that pane's own
+  // scroll event; without the driver guard the two handlers would answer
+  // each other forever. The driver lives in a ref, not state: the echo
+  // arrives on the very next event, and a state update is still in flight by
+  // then. A short timeout releases the guard once scrolling stops, so the
+  // OTHER pane is free to become the driver the moment the operator grabs it.
+  const editorRef = useRef<HTMLTextAreaElement>(null);
+  const previewRef = useRef<HTMLDivElement>(null);
+  const syncDriver = useRef<"editor" | "preview" | null>(null);
+  const syncRelease = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const syncScroll = (source: "editor" | "preview") => {
+    if (syncDriver.current && syncDriver.current !== source) return;
+    const from = source === "editor" ? editorRef.current : previewRef.current;
+    const to = source === "editor" ? previewRef.current : editorRef.current;
+    if (!from || !to) return;
+    syncDriver.current = source;
+    const fromRange = from.scrollHeight - from.clientHeight;
+    const toRange = to.scrollHeight - to.clientHeight;
+    // A pane with nothing to scroll can neither drive nor follow — forcing
+    // scrollTop on it would just fight the browser back to zero.
+    if (fromRange > 0 && toRange > 0) to.scrollTop = (from.scrollTop / fromRange) * toRange;
+    // Release the guard shortly after scrolling stops: the echo of the last
+    // programmatic write has long been swallowed by then, and whichever pane
+    // the operator touches next must be free to become the driver.
+    if (syncRelease.current) clearTimeout(syncRelease.current);
+    syncRelease.current = setTimeout(() => {
+      syncDriver.current = null;
+    }, 150);
+  };
+  useEffect(
+    () => () => {
+      if (syncRelease.current) clearTimeout(syncRelease.current);
+    },
+    [],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -620,7 +664,27 @@ function DocModal({
   };
 
   return (
-    <Modal title={`${name}.md — ${template}`} onClose={onClose} width="min-w-[60vw] max-w-[90vw]">
+    <Modal
+      title={`${name}.md — ${template}`}
+      // Gated on a loaded, existing document: while the fetch is in flight
+      // (`content === null`) there is nothing to edit or save yet, and a
+      // memory/ doc (`editable === false`) is read-only on this surface.
+      actions={
+        content !== null && !error ? (
+          editing ? (
+            <Button size="sm" disabled={saving} onClick={() => void save()}>
+              {saving ? "Saving…" : "Save"}
+            </Button>
+          ) : editable ? (
+            <Button size="sm" variant="outline" onClick={startEditing}>
+              Edit
+            </Button>
+          ) : null
+        ) : null
+      }
+      onClose={onClose}
+      width="min-w-[60vw] max-w-[90vw]"
+    >
       {error ? <LoadError error={error} /> : null}
       {exists === null && !error ? (
         <div className="py-6 text-center text-xs text-muted-foreground">Loading…</div>
@@ -637,31 +701,28 @@ function DocModal({
         </div>
       ) : content !== null ? (
         <>
-          <div className="mb-2 flex items-center justify-end gap-2">
-            {editing ? (
-              <Button size="sm" disabled={saving} onClick={() => void save()}>
-                {saving ? "Saving…" : "Save"}
-              </Button>
-            ) : editable ? (
-              <Button size="sm" variant="outline" onClick={startEditing}>
-                Edit
-              </Button>
-            ) : null}
-          </div>
           {saveError ? <div className="mb-2"><LoadError error={saveError} /></div> : null}
           {editing ? (
             // 1:1 split: the editor owns the left half and the live preview
-            // the right — equal widths, each with its own scroll, so a long
-            // document can be scanned in the preview while the cursor stays
-            // where the edit is happening.
+            // the right — equal widths, scrolling in lockstep (syncScroll) so
+            // the preview keeps showing the region being edited. Scrolling
+            // EITHER pane drives the other proportionally; without the sync a
+            // long document's preview would sit at the top while the cursor
+            // works three screens down.
             <div className="grid grid-cols-2 gap-3">
               <textarea
+                ref={editorRef}
+                onScroll={() => syncScroll("editor")}
                 value={draft}
                 onChange={(event) => setDraft(event.target.value)}
                 spellCheck={false}
                 className="h-[62vh] w-full resize-none rounded-md border border-border bg-card p-3 font-mono text-xs leading-relaxed outline-none focus:ring-1 focus:ring-ring"
               />
-              <div className="h-[62vh] overflow-y-auto rounded-md border border-border bg-background p-3">
+              <div
+                ref={previewRef}
+                onScroll={() => syncScroll("preview")}
+                className="h-[62vh] overflow-y-auto rounded-md border border-border bg-background p-3"
+              >
                 <MarkdownView content={draft} />
               </div>
             </div>
