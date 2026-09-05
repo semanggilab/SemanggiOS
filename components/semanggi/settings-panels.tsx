@@ -895,13 +895,13 @@ function BrainFormModal({
             />
           </Field>
 
-          {/* D51: the reset schedule decides what a quota refusal MEANS — a
-              per-minute window is retried in place (up to 10×), a 5-hour one
-              parks with an ETA. Providers have families of windows, so the
-              operator sees the two that actually exist. */}
+          {/* D51/D52: the reset schedule decides what a quota refusal MEANS —
+              a shortest window under 10 minutes is retried in place (up to
+              10×), anything longer waits out a backoff. Providers have
+              families of windows, so the operator sees the two that exist. */}
           <Field
             label="Quota reset (short)"
-            hint="The window the scheduler waits out on a quota refusal. Per-minute windows retry the task automatically, up to 10 times."
+            hint="The window the scheduler waits out on a quota refusal. Shortest window under 10 minutes retries the task automatically, up to 10 times."
           >
             <Select
               value={draft.quotaResetShortMs}
