@@ -33,6 +33,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "re
 import { ArrowDown, Bot, LoaderCircle, SendHorizontal } from "lucide-react";
 import {
   semanggi,
+  type CatalogModel,
   type ControlReply,
   type PlanStep,
   type ProjectDocStatus,
@@ -40,6 +41,7 @@ import {
   type ProjectSummary,
 } from "@/lib/semanggi/client";
 import { Badge, Button, Empty, LoadError, Modal, Notice, Select } from "./ui";
+import { TaskDialog } from "./task-dialog";
 
 type Message =
   | { kind: "operator"; text: string; at: number }
@@ -47,6 +49,12 @@ type Message =
 
 const MIN_ROWS = 1;
 const MAX_TEXTAREA_PX = 200;
+
+// SATU template bersama: tombol "Register tasks" di modal dokumen dan pill
+// quick-prompt di empty state harus menyisipkan teks yang sama persis — dua
+// salinan akan menyimpang sendiri. "langsung jalankan" dieja benar karena
+// frasa itulah yang dideteksi controller untuk memutuskan CREATED vs QUEUED.
+const REGISTER_TASKS_TEXT = "PREPARE: daftarkan semua tasks yang ada di docs/tasks.md dan langsung jalankan";
 
 export function ControlPage({ activeWorkspacePath }: { activeWorkspacePath?: string | null }) {
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
@@ -62,6 +70,8 @@ export function ControlPage({ activeWorkspacePath }: { activeWorkspacePath?: str
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [docs, setDocs] = useState<ProjectDocs | null>(null);
   const [openDoc, setOpenDoc] = useState<string | null>(null);
+  const [models, setModels] = useState<CatalogModel[]>([]);
+  const [openTask, setOpenTask] = useState<string | null>(null);
   const composerRef = useRef<HTMLDivElement>(null);
   const [composerHeight, setComposerHeight] = useState(0);
 
@@ -70,6 +80,12 @@ export function ControlPage({ activeWorkspacePath }: { activeWorkspacePath?: str
       .projectSummary()
       .then((s) => setProjects(s.projects))
       .catch((err) => setError(err instanceof Error ? err.message : String(err)));
+    // The task dialog's model picker needs the catalog; a failure here only
+    // degrades that picker, so it is swallowed instead of bannering the page.
+    semanggi
+      .models()
+      .then((m) => setModels(m.models))
+      .catch(() => {});
   }, []);
 
   // Readiness checklist is per project — refetch whenever the selection
@@ -251,7 +267,7 @@ export function ControlPage({ activeWorkspacePath }: { activeWorkspacePath?: str
                   </div>
                 </div>
               ) : (
-                <SystemMessage key={index} reply={message.reply} />
+                <SystemMessage key={index} reply={message.reply} onOpenTask={setOpenTask} />
               ),
             )}
             {busy ? <ThinkingBubble /> : null}
@@ -357,6 +373,11 @@ export function ControlPage({ activeWorkspacePath }: { activeWorkspacePath?: str
                 ? { label: "Create tasks", text: createTasksText(docs) }
                 : null
           }
+          footerAction={
+            // Registration only makes sense once the document exists — the
+            // modal's own fetched existence gates it (see DocModal).
+            openDoc === "tasks" ? { label: "Register tasks", text: REGISTER_TASKS_TEXT } : null
+          }
           missingNote={
             openDoc === "tasks" && docs.docs.find((d) => d.name === "plans")?.exists !== true
               ? "Tasks are created from the implementation plan — “Create tasks” appears once docs/plans.md exists."
@@ -373,6 +394,17 @@ export function ControlPage({ activeWorkspacePath }: { activeWorkspacePath?: str
             textareaRef.current?.focus();
           }}
           onClose={() => setOpenDoc(null)}
+        />
+      ) : null}
+
+      {openTask ? (
+        <TaskDialog
+          taskId={openTask}
+          models={models}
+          onClose={() => setOpenTask(null)}
+          // The conversation has no task list of its own to refresh — the
+          // dialog's own reload keeps its content current.
+          onChanged={() => {}}
         />
       ) : null}
     </div>
@@ -421,6 +453,7 @@ function DocModal({
   name,
   template,
   createAction,
+  footerAction,
   missingNote,
   onCreateAction,
   onClose,
@@ -429,6 +462,7 @@ function DocModal({
   name: string;
   template: string;
   createAction?: { label: string; text: string } | null;
+  footerAction?: { label: string; text: string } | null;
   missingNote?: string | null;
   onCreateAction?: (text: string) => void;
   onClose: () => void;
@@ -473,6 +507,13 @@ function DocModal({
       ) : content !== null ? (
         <div className="max-h-[70vh] overflow-y-auto pr-1">
           <MarkdownView content={content} />
+        </div>
+      ) : null}
+      {footerAction && onCreateAction && exists === true ? (
+        <div className="mt-3 flex justify-end border-t border-border pt-3">
+          <Button variant="outline" onClick={() => onCreateAction(footerAction.text)}>
+            {footerAction.label}
+          </Button>
         </div>
       ) : null}
     </Modal>
@@ -715,6 +756,9 @@ function ChatEmptyState({ docs, onPick }: { docs: ProjectDocs | null; onPick: (t
   const prompts: Array<{ label: string; text: string }> = [
     ...(plansMissing ? [{ label: "Create plans", text: createPlansText(docs) }] : []),
     ...(tasksMissing && plansDoc?.exists === true ? [{ label: "Create tasks", text: createTasksText(docs) }] : []),
+    // The mirror of the doc modal's Register button: offered only once
+    // docs/tasks.md exists — registering requires a document to register.
+    ...(tasksDoc?.exists === true ? [{ label: "Register tasks", text: REGISTER_TASKS_TEXT }] : []),
     { label: "WORK:", text: "WORK: " },
     { label: "TASK:", text: "TASK: " },
     { label: "Check a task", text: "status TASK-" },
@@ -769,7 +813,7 @@ function ThinkingBubble() {
   );
 }
 
-function SystemMessage({ reply }: { reply: ControlReply }) {
+function SystemMessage({ reply, onOpenTask }: { reply: ControlReply; onOpenTask: (taskId: string) => void }) {
   const tone =
     reply.intent === "CONFIRM"
       ? "warning"
@@ -777,6 +821,14 @@ function SystemMessage({ reply }: { reply: ControlReply }) {
         ? "success"
         : "neutral";
   const plan = reply.tasks.length > 0 ? reply.tasks : (reply.plan ?? []);
+  // Replies attribute the UI surface as "_(agentos-ui)_" — the plumbing's own
+  // name (§8.4's shared-token label). What the operator should read is the
+  // surface, not the plumbing.
+  const displayReply = reply.reply.replace(/_\(agentos-ui\)_/g, "Semanggi");
+  // A reply about a task IS the way in: clicking the region opens the same
+  // detail dialog Summary uses, so the conversation and the board share one
+  // reading space instead of two.
+  const clickable = Boolean(reply.taskId);
   // A left accent bar carries the tone at a glance across a long thread,
   // without repeating a colored badge on every line the way the border
   // color alone would ask the eye to do.
@@ -789,13 +841,41 @@ function SystemMessage({ reply }: { reply: ControlReply }) {
 
   return (
     <div className="flex justify-start">
-      <div className={`w-full max-w-[90%] space-y-2.5 rounded-[18px] border border-l-[3px] border-border bg-card px-3.5 py-3 ${accent}`}>
+      <div
+        onClick={clickable ? () => onOpenTask(reply.taskId as string) : undefined}
+        title={clickable ? `Open ${reply.taskId} detail` : undefined}
+        className={`w-full max-w-[90%] space-y-2.5 rounded-[18px] border border-l-[3px] border-border bg-card px-3.5 py-3 ${accent} ${
+          clickable ? "cursor-pointer transition-colors hover:border-primary/50" : ""
+        }`}
+      >
         <div className="flex items-center gap-2">
           <Badge tone={tone === "warning" ? "warning" : tone === "success" ? "success" : "info"}>{reply.intent}</Badge>
           {reply.action ? <Badge tone="neutral">{reply.action}</Badge> : null}
           {reply.taskId ? <code className="rounded bg-muted px-1.5 py-0.5 text-[11px]">{reply.taskId}</code> : null}
         </div>
-        <p className="whitespace-pre-wrap text-sm leading-relaxed">{reply.reply}</p>
+        <MarkdownView content={displayReply} />
+        {reply.registered && reply.registered.length > 0 ? (
+          <div className="space-y-1.5 pt-0.5">
+            <div className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Registered tasks</div>
+            <div className="space-y-1">
+              {reply.registered.map((task) => (
+                <button
+                  key={task.id}
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onOpenTask(task.id);
+                  }}
+                  className="flex w-full items-center gap-2 rounded-md border border-border px-2 py-1.5 text-left text-xs transition-colors hover:border-primary/50 hover:bg-accent"
+                >
+                  <code className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px]">{task.localId}</code>
+                  <span className="min-w-0 flex-1 truncate">{task.title}</span>
+                  <Badge tone={task.status === "QUEUED" ? "info" : "neutral"}>{task.status}</Badge>
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : null}
         {plan.length > 0 ? (
           <div className="space-y-1.5 pt-0.5">
             <div className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">

@@ -339,6 +339,15 @@ export type ControlReply = {
   created?: boolean;
   plan?: PlanStep[];
   tasks: PlanStep[];
+  /** PREPARE "daftarkan…": task yang dibuat dari docs/tasks.md, urut dokumen. */
+  registered?: Array<{
+    localId: string;
+    id: string;
+    title: string;
+    status: string;
+    role: string | null;
+    deps: string[];
+  }>;
 };
 
 export class SemanggiError extends Error {
