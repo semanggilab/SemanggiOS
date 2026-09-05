@@ -8,7 +8,7 @@ import { getInstanceProtectionStatus, INSTANCE_PROTECTION_COOKIE } from "@/lib/s
 
 import "@/app/globals.css";
 
-const siteTitle = "AgentOS | Control Plane";
+const siteTitle = "SemanggiOS | Control Plane";
 const siteDescription = "Human Control Layer for AI Agents and Companies | Built on OpenClaw.";
 const socialImagePath = "/readme/readme.jpeg";
 const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? process.env.VERCEL_URL;
@@ -23,11 +23,11 @@ export const metadata: Metadata = {
   metadataBase,
   title: siteTitle,
   description: siteDescription,
-  applicationName: "AgentOS",
+  applicationName: "SemanggiOS",
   manifest: "/site.webmanifest",
   appleWebApp: {
     capable: true,
-    title: "AgentOS",
+    title: "SemanggiOS",
     statusBarStyle: "black-translucent",
     startupImage: [
       {
@@ -62,7 +62,7 @@ export const metadata: Metadata = {
   },
   openGraph: {
     type: "website",
-    siteName: "AgentOS | Control Plane",
+    siteName: "SemanggiOS | Control Plane",
     title: siteTitle,
     description: siteDescription,
     images: [
@@ -70,7 +70,7 @@ export const metadata: Metadata = {
         url: socialImagePath,
         width: 1536,
         height: 1024,
-        alt: "AgentOS control-plane interface"
+        alt: "SemanggiOS control-plane interface"
       }
     ]
   },

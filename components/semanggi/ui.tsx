@@ -9,7 +9,8 @@
 // hulu. Yang ditiru adalah bahasa visualnya (kartu, lencana status, toolbar),
 // bukan kodenya.
 
-import { useEffect, useId, type ReactNode } from "react";
+import { useEffect, useId, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 
 export function PageShell({
   title,
@@ -241,8 +242,20 @@ export function Modal({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/50 p-4 sm:p-8" onClick={onClose}>
+  // Portal to document.body — required, not cosmetic. The Mission Control
+  // shell renders the content column inside `relative z-20`, which is a
+  // stacking context: any overlay inside it, however large its z-index, is
+  // capped at that z-20 layer and paints UNDER the fixed sidebar (z-30) —
+  // exactly the "modal loses to the sidebar" bug (2026-09-05). A portal
+  // mounts the overlay outside that context, where its own z-index is
+  // meaningful again. z-[70] clears every shell layer (sidebar z-30, mobile
+  // drawer z-50) except the mobile top bar's toasts.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+  if (!mounted) return null;
+
+  return createPortal(
+    <div className="fixed inset-0 z-[70] flex items-start justify-center overflow-y-auto bg-black/50 p-4 sm:p-8" onClick={onClose}>
       <div
         className={`w-full ${width} rounded-xl border border-border bg-background shadow-xl`}
         onClick={(event) => event.stopPropagation()}
@@ -258,7 +271,8 @@ export function Modal({
         </div>
         <div className="px-5 py-4">{children}</div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 

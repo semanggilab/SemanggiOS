@@ -82,6 +82,31 @@ export type ProjectRoleLevels = {
   roles: ProjectRoleLevel[];
 };
 
+/** One row of the Command Center readiness checklist (workspace document). */
+export type ProjectDocStatus = {
+  /** Filename stem, no directory, no extension — what the pill shows. */
+  name: string;
+  /** Which workspace directory the document lives in ("docs" | "memory"). */
+  dir: string;
+  exists: boolean;
+  size: number;
+  updatedAt: number | null;
+};
+
+export type ProjectDocs = {
+  projectId: string;
+  template: string;
+  workspacePath: string | null;
+  docs: ProjectDocStatus[];
+};
+
+export type ProjectDocContent = {
+  name: string;
+  dir: string;
+  exists: boolean;
+  content: string | null;
+};
+
 export type Task = {
   id: string;
   projectId: string;
@@ -292,7 +317,7 @@ export type PlanStep = {
 };
 
 export type ControlReply = {
-  intent: "CHAT" | "WORK" | "TASK" | "CONFIRM";
+  intent: "CHAT" | "WORK" | "TASK" | "CONFIRM" | "PREPARE";
   reply: string;
   reason?: string | null;
   action?: string | null;
@@ -415,6 +440,9 @@ export const semanggi = {
     const q = profile ? `?profile=${encodeURIComponent(profile)}` : "";
     return call<ProjectRoleLevels>("GET", `work/projects/${id}/role-levels${q}`);
   },
+  projectDocs: (id: string) => call<ProjectDocs>("GET", `work/projects/${id}/docs`),
+  projectDoc: (id: string, name: string) =>
+    call<ProjectDocContent>("GET", `work/projects/${id}/docs/${encodeURIComponent(name)}`),
   putProjectRoleLevels: (
     id: string,
     body: { profile?: Profile; roleLevels: Array<{ role: string; level: Level }> },

@@ -324,7 +324,7 @@ export function UserProfileDialog({
         <DialogHeader className="space-y-1 border-b border-border px-5 py-4 pr-14 sm:px-6">
           <DialogTitle className="text-lg tracking-[-0.02em]">User Profile</DialogTitle>
           <DialogDescription className="text-xs">
-            Manage your operator identity and the context AgentOS shares with OpenClaw.
+            Manage your operator identity and the context SemanggiOS shares with OpenClaw.
           </DialogDescription>
         </DialogHeader>
 

@@ -65,7 +65,7 @@ export function CanvasTitlePill({ surfaceTheme }: { surfaceTheme: SurfaceTheme }
             surfaceTheme === "light" ? "text-[#8a7261]" : "text-slate-500"
           )}
         >
-          AgentOS
+          SemanggiOS
         </p>
       </div>
       <span
