@@ -56,6 +56,18 @@ const MAX_TEXTAREA_PX = 200;
 // frasa itulah yang dideteksi controller untuk memutuskan CREATED vs QUEUED.
 const REGISTER_TASKS_TEXT = "/prepare daftarkan semua tasks yang ada di docs/tasks.md dan langsung jalankan";
 
+// Saran command saat operator mengetik "/" — daftar ini MENIRU kosakata
+// prefix yang diterima classifier (INTENT_PREFIX di intent.mjs), bukan
+// kosakata baru: bila router menambah prefix, daftar ini ikut, atau saran
+// akan menawarkan command yang tidak jalan. Muncul hanya sebelum spasi
+// pertama ("/pr" menyaring, "/prepare " sudah terlanjur lengkap dan
+// menyembunyikan saran agar tidak menutupi percakapan).
+const SLASH_COMMANDS: Array<{ prefix: string; hint: string }> = [
+  { prefix: "/prepare", hint: "one analyst task → docs/plans.md + docs/tasks.md" },
+  { prefix: "/work", hint: "new work, decomposed into phased tasks" },
+  { prefix: "/task", hint: "command on existing tasks (status/run/cancel/…)" },
+];
+
 export function ControlPage({ activeWorkspacePath }: { activeWorkspacePath?: string | null }) {
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [projectId, setProjectId] = useState("");
@@ -74,6 +86,22 @@ export function ControlPage({ activeWorkspacePath }: { activeWorkspacePath?: str
   const [openTask, setOpenTask] = useState<string | null>(null);
   const composerRef = useRef<HTMLDivElement>(null);
   const [composerHeight, setComposerHeight] = useState(0);
+
+  // Slash suggestions: visible while the composer holds a bare "/…" token.
+  // `slashDismissed` lets Escape close the list without it popping back on
+  // the very next keystroke — it resets as soon as the token changes into a
+  // different one.
+  const [slashIndex, setSlashIndex] = useState(0);
+  const [slashDismissed, setSlashDismissed] = useState(false);
+  const slashToken = /^\/\w*$/.test(text) ? text.toLowerCase() : null;
+  const slashSuggestions = slashToken === null ? [] : SLASH_COMMANDS.filter((c) => c.prefix.startsWith(slashToken));
+  const slashOpen = slashSuggestions.length > 0 && !slashDismissed;
+  const applySlash = (prefix: string) => {
+    setText(`${prefix} `);
+    setSlashDismissed(false);
+    setSlashIndex(0);
+    textareaRef.current?.focus();
+  };
 
   useEffect(() => {
     semanggi
@@ -319,6 +347,34 @@ export function ControlPage({ activeWorkspacePath }: { activeWorkspacePath?: str
               </Notice>
             </div>
           ) : null}
+          {slashOpen ? (
+            // Suggestions float ABOVE the input, chat-completion style. The
+            // list mirrors SLASH_COMMANDS order (prepare/work/task) so
+            // ArrowDown walks the same order the eye already scanned.
+            <div className="relative mb-2">
+              <div className="absolute bottom-full left-0 z-30 w-72 overflow-hidden rounded-lg border border-border bg-background shadow-lg">
+                {slashSuggestions.map((cmd, i) => (
+                  <button
+                    key={cmd.prefix}
+                    type="button"
+                    // mousedown, not click: clicking would blur the textarea
+                    // first and the focus return below would fight the click.
+                    onMouseDown={(event) => {
+                      event.preventDefault();
+                      applySlash(cmd.prefix);
+                    }}
+                    onMouseEnter={() => setSlashIndex(i)}
+                    className={`flex w-full flex-col items-start px-3 py-1.5 text-left transition-colors ${
+                      i === slashIndex ? "bg-accent" : "hover:bg-accent/60"
+                    }`}
+                  >
+                    <span className="text-xs font-semibold">{cmd.prefix}</span>
+                    <span className="text-[10px] text-muted-foreground">{cmd.hint}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
           <form
             onSubmit={(event) => {
               event.preventDefault();
@@ -329,8 +385,40 @@ export function ControlPage({ activeWorkspacePath }: { activeWorkspacePath?: str
               <textarea
                 ref={textareaRef}
                 value={text}
-                onChange={(event) => setText(event.target.value)}
+                onChange={(event) => {
+                  setText(event.target.value);
+                  // A different (or absent) slash token is a new question —
+                  // undismiss the list so typing "/w" after dismissing "/p"
+                  // shows /work again.
+                  if (!/^\/\w*$/.test(event.target.value)) setSlashDismissed(false);
+                }}
                 onKeyDown={(event) => {
+                  // Slash-suggestion keys come first: with the list open,
+                  // Enter COMPLETES rather than sends — otherwise the most
+                  // common flow ("type /, press enter") would send a bare
+                  // "/" to the router and get a CONFIRM back.
+                  if (slashOpen) {
+                    if (event.key === "ArrowDown") {
+                      event.preventDefault();
+                      setSlashIndex((i) => (i + 1) % slashSuggestions.length);
+                      return;
+                    }
+                    if (event.key === "ArrowUp") {
+                      event.preventDefault();
+                      setSlashIndex((i) => (i - 1 + slashSuggestions.length) % slashSuggestions.length);
+                      return;
+                    }
+                    if (event.key === "Enter" || event.key === "Tab") {
+                      event.preventDefault();
+                      applySlash(slashSuggestions[slashIndex].prefix);
+                      return;
+                    }
+                    if (event.key === "Escape") {
+                      event.preventDefault();
+                      setSlashDismissed(true);
+                      return;
+                    }
+                  }
                   // Enter sends, Shift+Enter inserts a newline — work requests are
                   // often multi-line, and forcing a single line makes people
                   // shorten the request until it loses an important requirement.
@@ -436,11 +524,19 @@ function DocPill({ doc, onOpen }: { doc: ProjectDocStatus; onOpen: () => void })
 }
 
 /**
- * Read-only document viewer. Width is at least 60% of the window so a real
- * planning document doesn't cramp into a dialog-sized column, and the
- * markdown is rendered (headings, lists, task checkboxes, code, emphasis) —
- * showing raw `#`/`**` syntax for a document whose whole value is its
- * structure would defeat the purpose of reading it here.
+ * Document viewer with an inline editor. Width is at least 60% of the window
+ * so a real planning document doesn't cramp into a dialog-sized column, and
+ * the markdown is rendered (headings, lists, task checkboxes, code,
+ * emphasis) — showing raw `#`/`**` syntax for a document whose whole value
+ * is its structure would defeat the purpose of reading it here.
+ *
+ * EDIT/SAVE: "Edit" swaps the reader for a 1:1 split — textarea on the left,
+ * rendered markdown on the right — and every keystroke re-renders the
+ * preview from the SAME draft state, so what Save persists is exactly what
+ * the operator was shown, not what they hope they typed. Save hides the
+ * editor and restores the reader; the button pair is mutually exclusive
+ * because "Edit" while already editing is a no-op and "Save" while reading
+ * has nothing to save.
  *
  * A missing plans/tasks document gets the same bootstrap button the chat
  * empty state offers (`createAction`); the modal's OWN fetched existence is
@@ -470,15 +566,27 @@ function DocModal({
   const [content, setContent] = useState<string | null>(null);
   const [exists, setExists] = useState<boolean | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  // memory/ docs (blueprint, decisions) are the agents' two-tier bootstrap
+  // territory (spec §9) — the controller refuses PUTs on them, so the Edit
+  // button never appears for them either. The reader stays for both dirs.
+  const [dir, setDir] = useState<string | null>(null);
+  const editable = dir === "docs";
 
   useEffect(() => {
     let cancelled = false;
+    setEditing(false);
+    setSaveError(null);
     semanggi
       .projectDoc(projectId, name)
       .then((d) => {
         if (cancelled) return;
         setExists(d.exists);
         setContent(d.content);
+        setDir(d.dir);
       })
       .catch((err) => {
         if (!cancelled) setError(err instanceof Error ? err.message : String(err));
@@ -487,6 +595,29 @@ function DocModal({
       cancelled = true;
     };
   }, [projectId, name]);
+
+  const startEditing = () => {
+    // Seed the draft from the fetched content, not from the last draft —
+    // otherwise a reopened edit session silently resurrects text the
+    // operator already discarded by closing the modal.
+    setDraft(content ?? "");
+    setSaveError(null);
+    setEditing(true);
+  };
+
+  const save = async () => {
+    setSaving(true);
+    setSaveError(null);
+    try {
+      await semanggi.saveProjectDoc(projectId, name, draft);
+      setContent(draft);
+      setEditing(false);
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(false);
+    }
+  };
 
   return (
     <Modal title={`${name}.md — ${template}`} onClose={onClose} width="min-w-[60vw] max-w-[90vw]">
@@ -505,11 +636,43 @@ function DocModal({
           ) : null}
         </div>
       ) : content !== null ? (
-        <div className="max-h-[70vh] overflow-y-auto pr-1">
-          <MarkdownView content={content} />
-        </div>
+        <>
+          <div className="mb-2 flex items-center justify-end gap-2">
+            {editing ? (
+              <Button size="sm" disabled={saving} onClick={() => void save()}>
+                {saving ? "Saving…" : "Save"}
+              </Button>
+            ) : editable ? (
+              <Button size="sm" variant="outline" onClick={startEditing}>
+                Edit
+              </Button>
+            ) : null}
+          </div>
+          {saveError ? <div className="mb-2"><LoadError error={saveError} /></div> : null}
+          {editing ? (
+            // 1:1 split: the editor owns the left half and the live preview
+            // the right — equal widths, each with its own scroll, so a long
+            // document can be scanned in the preview while the cursor stays
+            // where the edit is happening.
+            <div className="grid grid-cols-2 gap-3">
+              <textarea
+                value={draft}
+                onChange={(event) => setDraft(event.target.value)}
+                spellCheck={false}
+                className="h-[62vh] w-full resize-none rounded-md border border-border bg-card p-3 font-mono text-xs leading-relaxed outline-none focus:ring-1 focus:ring-ring"
+              />
+              <div className="h-[62vh] overflow-y-auto rounded-md border border-border bg-background p-3">
+                <MarkdownView content={draft} />
+              </div>
+            </div>
+          ) : (
+            <div className="max-h-[70vh] overflow-y-auto pr-1">
+              <MarkdownView content={content} />
+            </div>
+          )}
+        </>
       ) : null}
-      {footerAction && onCreateAction && exists === true ? (
+      {footerAction && onCreateAction && exists === true && !editing ? (
         <div className="mt-3 flex justify-end border-t border-border pt-3">
           <Button variant="outline" onClick={() => onCreateAction(footerAction.text)}>
             {footerAction.label}
@@ -645,14 +808,19 @@ function MarkdownView({ content }: { content: string }) {
       );
       continue;
     }
-    const task = line.match(/^\s*- \[( |x|X)\]\s+(.*)$/);
+    // Three checkbox states, mirroring the register flow's marks: `[ ]` open,
+    // `[-]` registered in the controller (written back by registerTasks), and
+    // `[x]` done. A `[-]` row is alive in the system, so it gets a neutral
+    // filled glyph — not an empty box (which reads "never touched") and not
+    // a strike-through (which reads "finished").
+    const task = line.match(/^\s*- \[( |x|X|-)\]\s+(.*)$/);
     if (task) {
       blocks.push(
         <div key={key++} className="flex items-start gap-1.5">
-          <span className={task[1] === " " ? "text-muted-foreground" : "text-emerald-500"}>
-            {task[1] === " " ? "☐" : "☑"}
+          <span className={task[1] === " " ? "text-muted-foreground" : task[1] === "-" ? "text-sky-500" : "text-emerald-500"}>
+            {task[1] === " " ? "☐" : task[1] === "-" ? "▣" : "☑"}
           </span>
-          <span className={task[1] !== " " ? "text-muted-foreground line-through" : ""}>{renderInline(task[2])}</span>
+          <span className={task[1].toLowerCase() === "x" ? "text-muted-foreground line-through" : ""}>{renderInline(task[2])}</span>
         </div>,
       );
       i++;

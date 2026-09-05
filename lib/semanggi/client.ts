@@ -464,6 +464,8 @@ export const semanggi = {
   projectDocs: (id: string) => call<ProjectDocs>("GET", `work/projects/${id}/docs`),
   projectDoc: (id: string, name: string) =>
     call<ProjectDocContent>("GET", `work/projects/${id}/docs/${encodeURIComponent(name)}`),
+  saveProjectDoc: (id: string, name: string, content: string) =>
+    call<ProjectDocContent>("PUT", `work/projects/${id}/docs/${encodeURIComponent(name)}`, { content }),
   putProjectRoleLevels: (
     id: string,
     body: { profile?: Profile; roleLevels: Array<{ role: string; level: Level }> },
