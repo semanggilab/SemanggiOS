@@ -23,8 +23,8 @@
 // the rest of this file avoids importing AgentOS components: the visual
 // language is worth matching, the code isn't worth coupling to.
 
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { ChevronRight, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { ArrowDown, ChevronRight, RefreshCw, X } from "lucide-react";
 import {
   semanggi,
   relativeTime,
@@ -91,13 +91,18 @@ export function TaskDialog({
   // The transcript is what the side panel reads from, so it loads once up
   // front rather than only when the Transcript tab is opened — an execution
   // clicked from the Info tab needs its turns immediately, not after a
-  // detour through a tab the operator never asked to see.
-  useEffect(() => {
+  // detour through a tab the operator never asked to see. Kept as a named
+  // callback because the side panel's refresh button calls the same load.
+  const loadTranscript = useCallback(() => {
     semanggi
       .transcript(taskId)
       .then((t) => setTurns(t.turns))
       .catch((err) => setError(err instanceof Error ? err.message : String(err)));
   }, [taskId]);
+
+  useEffect(() => {
+    loadTranscript();
+  }, [loadTranscript]);
 
   // Escape closes the side panel first, then the dialog — two presses to
   // fully back out matches what the panel's own visual layering already
@@ -263,7 +268,7 @@ export function TaskDialog({
           </div>
         </div>
 
-        <DetailSidePanel panel={sidePanel} turns={pairedTurns} onClose={() => setSidePanel(null)} />
+        <DetailSidePanel panel={sidePanel} turns={pairedTurns} onClose={() => setSidePanel(null)} onRefresh={loadTranscript} />
       </div>
     </div>
   );
@@ -385,6 +390,11 @@ function Controls({
   const live = ["RUNNING", "DISPATCHED"].includes(task.status);
   const finished = ["COMPLETE", "CANCELLED"].includes(task.status);
   const held = task.status === "CREATED";
+  // A BLOCKED task is already stopped and already parked — Stop and
+  // Force-run on it do nothing but suggest otherwise. The Resume region
+  // below is the one live control for this status, so the two buttons go
+  // dead while it's up.
+  const blocked = task.status === "BLOCKED";
   // Every status a revision can legally move to QUEUED from (see
   // state-machine.mjs's TRANSITIONS): the WAIT_* family, RESUMABLE, FAILED,
   // COMPLETE (a revision is the one path allowed to re-queue it), and
@@ -410,8 +420,14 @@ function Controls({
           <Button
             size="sm"
             variant="outline"
-            disabled={busy || finished}
-            title={live ? "Stops the currently running execution" : "Parks the task so its plan can be changed"}
+            disabled={busy || finished || blocked}
+            title={
+              blocked
+                ? "A blocked task is already stopped — use Resume below"
+                : live
+                  ? "Stops the currently running execution"
+                  : "Parks the task so its plan can be changed"
+            }
             onClick={() => act(() => semanggi.stop(task.id, "stopped from the Summary page"))}
           >
             Stop
@@ -419,8 +435,8 @@ function Controls({
           <Button
             size="sm"
             variant="outline"
-            disabled={busy || finished}
-            title="Temporarily raises priority; recovers on its own after 30 minutes"
+            disabled={busy || finished || blocked}
+            title={blocked ? "A blocked task can't run until it's resumed" : "Temporarily raises priority; recovers on its own after 30 minutes"}
             onClick={() => act(() => semanggi.expedite(task.id, 30 * 60_000))}
           >
             Force-run (30 min)
@@ -647,11 +663,26 @@ function DetailSidePanel({
   panel,
   turns,
   onClose,
+  onRefresh,
 }: {
   panel: SidePanelState;
   turns: TranscriptTurn[];
   onClose: () => void;
+  onRefresh: () => void;
 }) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [overflowing, setOverflowing] = useState(false);
+  const checkOverflow = useCallback(() => {
+    const el = scrollRef.current;
+    setOverflowing(el ? el.scrollHeight > el.clientHeight + 8 : false);
+  }, []);
+  // Content height changes with every transcript reload and with the panel
+  // opening on a different execution — re-measure on both, not just on
+  // scroll, or the jump-to-end button shows up one reload late.
+  useEffect(() => {
+    checkOverflow();
+  }, [panel, turns, checkOverflow]);
+
   if (!panel) return null;
   return (
     <div className="absolute inset-0 z-30">
@@ -683,12 +714,43 @@ function DetailSidePanel({
             <X className="h-4 w-4" />
           </button>
         </div>
-        <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+        <div className="relative min-h-0 flex-1">
+          <div ref={scrollRef} onScroll={checkOverflow} className="h-full overflow-y-auto px-4 py-3">
+            {panel.kind === "execution" ? (
+              <ExecutionDetail execution={panel.execution} turns={turns} />
+            ) : (
+              <TimelineDetail event={panel.event} />
+            )}
+          </div>
+          {/* Floating actions for the execution conversation: a running
+              execution keeps growing, so the two things an operator reaches
+              for — "what did it just say?" and "is there more?" — get
+              buttons instead of a hunt through the scrollbar. */}
           {panel.kind === "execution" ? (
-            <ExecutionDetail execution={panel.execution} turns={turns} />
-          ) : (
-            <TimelineDetail event={panel.event} />
-          )}
+            <div className="absolute bottom-3 right-3 flex items-center gap-2">
+              <button
+                type="button"
+                title="Reload the latest conversation"
+                onClick={onRefresh}
+                className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-border bg-background/90 text-muted-foreground shadow-md backdrop-blur transition-colors hover:bg-accent hover:text-foreground"
+              >
+                <RefreshCw className="h-4 w-4" />
+              </button>
+              {overflowing ? (
+                <button
+                  type="button"
+                  title="Jump to the latest message"
+                  onClick={() => {
+                    const el = scrollRef.current;
+                    if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+                  }}
+                  className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-border bg-background/90 text-muted-foreground shadow-md backdrop-blur transition-colors hover:bg-accent hover:text-foreground"
+                >
+                  <ArrowDown className="h-4 w-4" />
+                </button>
+              ) : null}
+            </div>
+          ) : null}
         </div>
       </div>
     </div>
@@ -1119,10 +1181,32 @@ function ToolResultBody({ name, result }: { name: string; result: TranscriptBloc
  * fences, inline code, bold, links — fits in this box; anything else falls
  * through as plain paragraphs instead of disappearing.
  */
+/** GFM pipe tables — the one block shape deliverable reports kept using
+ *  that the renderer dropped into a plain paragraph (TASK reports read from
+ *  a `read` tool result were the visible case). */
+function isTableSeparator(line: string): boolean {
+  return line.includes("|") && line.includes("-") && /^[\s|:-]+$/.test(line);
+}
+
+function isTableStart(line: string, next: string | undefined): boolean {
+  return line.includes("|") && next !== undefined && isTableSeparator(next);
+}
+
+function splitTableRow(line: string): string[] {
+  let row = line.trim();
+  if (row.startsWith("|")) row = row.slice(1);
+  if (row.endsWith("|")) row = row.slice(0, -1);
+  return row.split("|").map((cell) => cell.trim());
+}
+
 function Markdownish({ text, className = "" }: { text: string; className?: string }) {
   const lines = text.replace(/\r\n/g, "\n").split("\n");
-  const isBlockStart = (line: string) =>
-    line.startsWith("```") || /^#{1,4}\s/.test(line) || /^\s*[-*]\s+/.test(line) || /^\s*\d+\.\s+/.test(line);
+  const isBlockStart = (line: string, next?: string) =>
+    line.startsWith("```") ||
+    /^#{1,4}\s/.test(line) ||
+    /^\s*[-*]\s+/.test(line) ||
+    /^\s*\d+\.\s+/.test(line) ||
+    isTableStart(line, next);
   const blocks: ReactNode[] = [];
   let i = 0;
   let key = 0;
@@ -1187,9 +1271,45 @@ function Markdownish({ text, className = "" }: { text: string; className?: strin
       );
       continue;
     }
+    if (isTableStart(line, lines[i + 1])) {
+      const header = splitTableRow(line);
+      i += 2; // header + separator
+      const rows: string[][] = [];
+      while (i < lines.length && lines[i].trim() && lines[i].includes("|")) {
+        rows.push(splitTableRow(lines[i]));
+        i += 1;
+      }
+      blocks.push(
+        <div key={key++} className="overflow-x-auto">
+          <table className="w-full border-collapse text-xs">
+            <thead>
+              <tr>
+                {header.map((cell, idx) => (
+                  <th key={idx} className="border border-border bg-muted px-2 py-1 text-left font-medium">
+                    {renderInline(cell, `th${key}-${idx}`)}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row, rIdx) => (
+                <tr key={rIdx}>
+                  {row.map((cell, cIdx) => (
+                    <td key={cIdx} className="border border-border px-2 py-1 align-top">
+                      {renderInline(cell, `td${key}-${rIdx}-${cIdx}`)}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>,
+      );
+      continue;
+    }
     const paragraph: string[] = [line];
     i += 1;
-    while (i < lines.length && lines[i].trim() && !isBlockStart(lines[i])) {
+    while (i < lines.length && lines[i].trim() && !isBlockStart(lines[i], lines[i + 1])) {
       paragraph.push(lines[i]);
       i += 1;
     }
