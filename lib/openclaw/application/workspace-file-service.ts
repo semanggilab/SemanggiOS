@@ -374,6 +374,10 @@ async function discoverSafeWorkspaceFilePaths(workspacePath: string) {
     maxDepth: 4,
     include: (relativePath) => relativePath.endsWith(".md") || relativePath.endsWith(".json")
   });
+  await collectFiles(workspacePath, "deliverables", discovered, {
+    maxDepth: 4,
+    include: (relativePath) => relativePath.endsWith(".md")
+  });
   await collectFiles(workspacePath, "skills", discovered, {
     maxDepth: 4,
     include: (relativePath) => relativePath.endsWith("/SKILL.md")
@@ -691,6 +695,18 @@ function describeAllowedWorkspaceFile(
       usage: "Use memory/*.md files for focused durable notes such as decisions, constraints, research findings, or operating history.",
       runtimeBehavior: "Agents can read these files from the workspace when they need supporting memory beyond root MEMORY.md.",
       createable: true
+    };
+  }
+
+  if (parts[0] === "deliverables" && parts.length >= 2 && language === "markdown") {
+    return {
+      category: "context",
+      language,
+      source,
+      description: "Task deliverable report.",
+      usage: "Use deliverables/<TASK-ID>/*.md for the final outputs a task was asked to produce; the folder name correlates with the Semanggi task id.",
+      runtimeBehavior: "Agents write these files as task output; read them to review what a task delivered.",
+      createable: false
     };
   }
 
