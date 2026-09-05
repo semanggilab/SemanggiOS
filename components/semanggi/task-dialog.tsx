@@ -620,11 +620,11 @@ function Transcript({ turns }: { turns: TranscriptTurn[] }) {
       {turns.map((t, i) => (
         <div key={i} className={`rounded-md border px-3 py-2 ${t.role === "operator" ? "border-border bg-muted/50" : "border-border"}`}>
           <div className="mb-1.5 flex items-center gap-2 text-[11px] text-muted-foreground">
-            <span className="font-medium capitalize">{t.role}</span>
+            <span className="font-medium">{roleLabel(t.role)}</span>
             <span>#{t.revision}</span>
             <span>{relativeTime(t.at)}</span>
           </div>
-          <BlockList blocks={t.blocks} fallbackText={t.text} />
+          <BlockList blocks={t.blocks} fallbackText={t.text} role={t.role} />
         </div>
       ))}
     </div>
@@ -728,10 +728,10 @@ function ExecutionDetail({ execution, turns }: { execution: Execution; turns: Tr
           own.map((t, i) => (
             <div key={i}>
               <div className="mb-1 flex items-center gap-2 text-[10px] text-muted-foreground">
-                <span className="font-medium capitalize">{t.role}</span>
+                <span className="font-medium">{roleLabel(t.role)}</span>
                 <span>{relativeTime(t.at)}</span>
               </div>
-              <BlockList blocks={t.blocks} fallbackText={t.text} />
+              <BlockList blocks={t.blocks} fallbackText={t.text} role={t.role} />
             </div>
           ))
         )}
@@ -766,27 +766,82 @@ function TimelineDetail({ event }: { event: WorkEvent }) {
 }
 
 /**
+ * The gateway's role vocabulary is wire-shaped (toolResult, assistant); the
+ * transcript is read by people, so each role gets a readable label instead of
+ * a capitalized identifier.
+ */
+function roleLabel(role: string): string {
+  switch (role) {
+    case "toolResult":
+      return "Tool output";
+    case "assistant":
+      return "Assistant";
+    case "user":
+      return "User";
+    case "operator":
+      return "Operator";
+    default:
+      return role;
+  }
+}
+
+/**
  * Renders a turn's raw content blocks, distinguishing what a person actually
  * needs to tell apart: the response, the reasoning behind it, and what it
  * ran. Falls back to the flattened text when there are no blocks (an
  * operator's own instruction, or an execution recorded before this UI could
  * read `blocks` at all) rather than showing nothing.
  */
-function BlockList({ blocks, fallbackText }: { blocks: TranscriptBlock[] | null; fallbackText: string }) {
+function BlockList({ blocks, fallbackText, role }: { blocks: TranscriptBlock[] | null; fallbackText: string; role?: string }) {
   if (!blocks || blocks.length === 0) {
     return fallbackText ? <p className="whitespace-pre-wrap text-sm leading-relaxed">{fallbackText}</p> : null;
   }
   return (
     <div className="space-y-1.5">
       {blocks.map((block, index) => (
-        <TranscriptBlockView key={index} block={block} />
+        <TranscriptBlockView key={index} block={block} role={role} />
       ))}
     </div>
   );
 }
 
-function TranscriptBlockView({ block }: { block: TranscriptBlock }) {
+function TranscriptBlockView({ block, role }: { block: TranscriptBlock; role?: string }) {
+  if (block.type === "toolResult") {
+    // What a tool actually printed — shell output, exit codes, write
+    // confirmations. Red when the tool failed, because a failed command is
+    // exactly what a reader scanning the transcript must not miss.
+    const failed = block.isError === true;
+    return (
+      <div className={`rounded-lg border px-3 py-2 ${failed ? "border-red-500/40 bg-red-500/5" : "border-emerald-500/30 bg-emerald-500/5"}`}>
+        <div className={`mb-1 flex flex-wrap items-center gap-2 text-[10px] font-medium uppercase tracking-wide ${failed ? "text-red-700 dark:text-red-300" : "text-emerald-700 dark:text-emerald-300"}`}>
+          <span>Tool output</span>
+          {typeof block.name === "string" ? (
+            <code className={`rounded px-1.5 py-0.5 normal-case text-[11px] ${failed ? "bg-red-500/15 text-red-800 dark:text-red-200" : "bg-emerald-500/15 text-emerald-800 dark:text-emerald-200"}`}>
+              {block.name}
+            </code>
+          ) : null}
+          {typeof block.meta === "string" ? <span className="normal-case text-muted-foreground">{block.meta}</span> : null}
+          {typeof block.exitCode === "number" ? <span className="normal-case text-muted-foreground">exit {block.exitCode}</span> : null}
+        </div>
+        {typeof block.text === "string" && block.text.length > 0 ? (
+          <pre className="overflow-x-auto whitespace-pre-wrap font-mono text-[11px] leading-relaxed">{block.text}</pre>
+        ) : null}
+      </div>
+    );
+  }
+
   if (block.type === "text") {
+    // A text block inside a toolResult turn is what a tool printed — shell
+    // output, a file listing, a diff — not something the model said. Labeling
+    // it "Response" would read the transcript backwards.
+    if (role === "toolResult") {
+      return (
+        <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 px-3 py-2">
+          <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-emerald-700 dark:text-emerald-300">Tool output</div>
+          <pre className="overflow-x-auto whitespace-pre-wrap font-mono text-[11px] leading-relaxed">{block.text}</pre>
+        </div>
+      );
+    }
     return (
       <div className="rounded-lg border border-border bg-card px-3 py-2">
         <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Response</div>
