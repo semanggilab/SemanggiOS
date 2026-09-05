@@ -1062,6 +1062,31 @@ function TranscriptBlockView({ block, role }: { block: TranscriptBlock; role?: s
     return <ToolCallView block={block} />;
   }
 
+  if (block.type === "toolEvent") {
+    // A `session.tool` lifecycle frame (the `tool-events` cap, D48): wire
+    // bookkeeping about a tool call, not the call's output — the output has
+    // its own "Output" region, so this only matters when debugging the
+    // protocol itself. Collapsed by default in the Reasoning region's shell
+    // (dashed border, muted body) for the same reason: long executions emit
+    // one per tool phase and none of them change what the run did.
+    const name =
+      typeof block.toolName === "string" ? block.toolName : typeof block.name === "string" ? block.name : null;
+    const phase =
+      typeof block.phase === "string" ? block.phase : typeof block.status === "string" ? block.status : null;
+    return (
+      <details className="rounded-lg border border-dashed border-border bg-muted/30 px-3 py-2">
+        <summary className="flex cursor-pointer list-none flex-wrap items-center gap-2 text-[10px] font-medium uppercase tracking-wide text-muted-foreground [&::-webkit-details-marker]:hidden">
+          Tool Event
+          {name ? <code className="rounded bg-muted px-1.5 py-0.5 normal-case text-[11px]">{name}</code> : null}
+          {phase ? <span className="ml-auto normal-case">{phase}</span> : null}
+        </summary>
+        <pre className="mt-1.5 overflow-x-auto whitespace-pre-wrap text-[11px] leading-relaxed text-muted-foreground">
+          {JSON.stringify((block.payload as object | undefined) ?? block, null, 2)}
+        </pre>
+      </details>
+    );
+  }
+
   // An unrecognised block type — the gateway may add ones this UI doesn't
   // know about yet — is shown, not hidden, per §8.7's spirit: a block that
   // silently disappears is easy to mistake for one that never happened.

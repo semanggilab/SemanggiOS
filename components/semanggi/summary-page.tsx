@@ -54,14 +54,21 @@ const REFRESH_MS = 15_000;
 const TASK_LIST_MAX_HEIGHT_PX = 445;
 
 /**
- * Which statuses the "Done" column shows. Default is COMPLETE only: a Done
- * column fills with everything that ever finished, and the operator's
- * question there is "what did we get?" — cancelled work is history they
- * chose to end, not an outcome they're tracking. CANCELLED stays one
- * checkbox away instead of absent, because "what did I kill last week?" is
- * still a real question, just a rarer one.
+ * Which statuses each board column shows. Every column defaults to its FULL
+ * set — a filtered board must be a visible choice, never a silent default —
+ * with one exception: "Done" defaults to COMPLETE only, because a Done column
+ * fills with everything that ever stopped, and the operator's question there
+ * is "what did we get?" — cancelled work is history they chose to end, not an
+ * outcome they're tracking. CANCELLED stays one checkbox away instead of
+ * absent, because "what did I kill last week?" is still a real question, just
+ * a rarer one.
  */
-const DONE_COLUMN_DEFAULT_STATUSES = () => new Set<string>(["COMPLETE"]);
+const DEFAULT_COLUMN_STATUSES = () => {
+  const map = {} as Record<ColumnId, Set<string>>;
+  for (const column of COLUMNS) map[column.id] = new Set<string>(column.statuses as readonly string[]);
+  map.done = new Set<string>(["COMPLETE"]);
+  return map;
+};
 
 export function SummaryPage({ activeWorkspacePath }: { activeWorkspacePath?: string | null }) {
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
@@ -72,10 +79,13 @@ export function SummaryPage({ activeWorkspacePath }: { activeWorkspacePath?: str
   const [openTask, setOpenTask] = useState<string | null>(null);
   const [scope, setScope] = useState<string>("workspace");
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
-  // One choice for every project's Done column: the filter answers a
-  // question about statuses, not about a project, and per-project toggles
-  // would let two boards on one screen disagree about what "Done" means.
-  const [doneStatuses, setDoneStatuses] = useState<Set<string>>(DONE_COLUMN_DEFAULT_STATUSES);
+  // One choice for every project's columns: a filter answers a question
+  // about statuses, not about a project, and per-project toggles would let
+  // two boards on one screen disagree about what a column means.
+  const [columnStatuses, setColumnStatuses] = useState<Record<ColumnId, Set<string>>>(DEFAULT_COLUMN_STATUSES);
+  const setColumnStatus = useCallback((columnId: ColumnId, next: Set<string>) => {
+    setColumnStatuses((prev) => ({ ...prev, [columnId]: next }));
+  }, []);
 
   const load = useCallback(async () => {
     try {
@@ -188,8 +198,8 @@ export function SummaryPage({ activeWorkspacePath }: { activeWorkspacePath?: str
             collapsed={collapsed}
             onToggle={toggle}
             onOpen={setOpenTask}
-            doneStatuses={doneStatuses}
-            onDoneStatusesChange={setDoneStatuses}
+            columnStatuses={columnStatuses}
+            onColumnStatusChange={setColumnStatus}
           />
         ))}
       </div>
@@ -216,16 +226,16 @@ function ProjectCard({
   collapsed,
   onToggle,
   onOpen,
-  doneStatuses,
-  onDoneStatusesChange,
+  columnStatuses,
+  onColumnStatusChange,
 }: {
   project: ProjectSummary;
   tasks: Task[];
   collapsed: Record<string, boolean>;
   onToggle: (projectId: string, column: ColumnId, currentlyCollapsed: boolean) => void;
   onOpen: (taskId: string) => void;
-  doneStatuses: Set<string>;
-  onDoneStatusesChange: (next: Set<string>) => void;
+  columnStatuses: Record<ColumnId, Set<string>>;
+  onColumnStatusChange: (columnId: ColumnId, next: Set<string>) => void;
 }) {
   const accentRgb = getProjectAccentRgb(project.id);
 
@@ -317,15 +327,15 @@ function ProjectCard({
         collapsed={collapsed}
         onToggle={onToggle}
         onOpen={onOpen}
-        doneStatuses={doneStatuses}
-        onDoneStatusesChange={onDoneStatusesChange}
+        columnStatuses={columnStatuses}
+        onColumnStatusChange={onColumnStatusChange}
       />
     </Card>
   );
 }
 
 /**
- * Multi-select status filter for the Done column header.
+ * Multi-select status filter for a board column header.
  *
  * Native `<select multiple>` is unusable at this size (it renders as a tall
  * listbox, not a dropdown), and the panel rules forbid pulling in a component
@@ -337,10 +347,12 @@ function ProjectCard({
  * outside the button element (nested buttons are invalid HTML and React
  * warns about them).
  */
-function DoneStatusFilter({
+function ColumnStatusFilter({
+  columnId,
   selected,
   onChange,
 }: {
+  columnId: ColumnId;
   selected: Set<string>;
   onChange: (next: Set<string>) => void;
 }) {
@@ -356,7 +368,7 @@ function DoneStatusFilter({
     return () => document.removeEventListener("mousedown", onDown);
   }, [open]);
 
-  const statuses = COLUMNS.find((c) => c.id === "done")!.statuses as readonly string[];
+  const statuses = COLUMNS.find((c) => c.id === columnId)!.statuses as readonly string[];
   const hiddenCount = statuses.filter((s) => !selected.has(s)).length;
 
   const toggle = (status: string) => {
@@ -415,16 +427,16 @@ function Board({
   collapsed,
   onToggle,
   onOpen,
-  doneStatuses,
-  onDoneStatusesChange,
+  columnStatuses,
+  onColumnStatusChange,
 }: {
   project: ProjectSummary;
   tasks: Task[];
   collapsed: Record<string, boolean>;
   onToggle: (projectId: string, column: ColumnId, currentlyCollapsed: boolean) => void;
   onOpen: (taskId: string) => void;
-  doneStatuses: Set<string>;
-  onDoneStatusesChange: (next: Set<string>) => void;
+  columnStatuses: Record<ColumnId, Set<string>>;
+  onColumnStatusChange: (columnId: ColumnId, next: Set<string>) => void;
 }) {
   const grouped = useMemo(() => {
     const map = new Map<ColumnId, Task[]>();
@@ -440,12 +452,12 @@ function Board({
     <div className="grid gap-3 lg:grid-cols-3 xl:grid-cols-6">
       {COLUMNS.map((column) => {
         const all = grouped.get(column.id) ?? [];
-        // The Done column is the only one with a status filter: it is the
-        // one place where "everything that ever stopped" piles up, and the
-        // interesting subset (finished vs cancelled) is an operator choice,
-        // not a scheduler fact.
-        const list =
-          column.id === "done" ? all.filter((t) => doneStatuses.has(t.status)) : all;
+        // Filtering is per-column state shared by every project's board —
+        // one operator, one meaning of "show me only this". "Done" is the
+        // only column whose DEFAULT hides a status (see
+        // DEFAULT_COLUMN_STATUSES); the rest start showing everything.
+        const selected = columnStatuses[column.id] ?? new Set<string>(column.statuses as readonly string[]);
+        const list = all.filter((t) => selected.has(t.status));
         const key = `${project.id}:${column.id}`;
         const isCollapsed = collapsed[key] ?? list.length === 0;
         const filteredOut = all.length - list.length;
@@ -463,8 +475,16 @@ function Board({
                   {filteredOut > 0 ? `${list.length}/${all.length}` : list.length}
                 </Badge>
               </button>
-              {column.id === "done" ? (
-                <DoneStatusFilter selected={doneStatuses} onChange={onDoneStatusesChange} />
+              {/* A single-status column ("On hold" is only CREATED) has
+                  nothing to filter — a filter control there would be a
+                  button that does nothing, which trains operators to ignore
+                  all of them. */}
+              {(column.statuses as readonly string[]).length > 1 ? (
+                <ColumnStatusFilter
+                  columnId={column.id}
+                  selected={selected}
+                  onChange={(next) => onColumnStatusChange(column.id, next)}
+                />
               ) : null}
             </div>
             {!isCollapsed ? (
