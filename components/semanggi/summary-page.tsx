@@ -17,13 +17,14 @@
 // tanpa menyembunyikan bahwa kolom itu ada — nol yang terlihat adalah
 // informasi, kolom yang hilang bukan.
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   Activity,
   Clock,
   Hourglass,
   ListChecks,
+  ListFilter,
   Sparkles,
   type LucideIcon,
 } from "lucide-react";
@@ -52,6 +53,16 @@ const REFRESH_MS = 15_000;
  */
 const TASK_LIST_MAX_HEIGHT_PX = 445;
 
+/**
+ * Which statuses the "Done" column shows. Default is COMPLETE only: a Done
+ * column fills with everything that ever finished, and the operator's
+ * question there is "what did we get?" — cancelled work is history they
+ * chose to end, not an outcome they're tracking. CANCELLED stays one
+ * checkbox away instead of absent, because "what did I kill last week?" is
+ * still a real question, just a rarer one.
+ */
+const DONE_COLUMN_DEFAULT_STATUSES = () => new Set<string>(["COMPLETE"]);
+
 export function SummaryPage({ activeWorkspacePath }: { activeWorkspacePath?: string | null }) {
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -61,6 +72,10 @@ export function SummaryPage({ activeWorkspacePath }: { activeWorkspacePath?: str
   const [openTask, setOpenTask] = useState<string | null>(null);
   const [scope, setScope] = useState<string>("workspace");
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  // One choice for every project's Done column: the filter answers a
+  // question about statuses, not about a project, and per-project toggles
+  // would let two boards on one screen disagree about what "Done" means.
+  const [doneStatuses, setDoneStatuses] = useState<Set<string>>(DONE_COLUMN_DEFAULT_STATUSES);
 
   const load = useCallback(async () => {
     try {
@@ -173,6 +188,8 @@ export function SummaryPage({ activeWorkspacePath }: { activeWorkspacePath?: str
             collapsed={collapsed}
             onToggle={toggle}
             onOpen={setOpenTask}
+            doneStatuses={doneStatuses}
+            onDoneStatusesChange={setDoneStatuses}
           />
         ))}
       </div>
@@ -199,12 +216,16 @@ function ProjectCard({
   collapsed,
   onToggle,
   onOpen,
+  doneStatuses,
+  onDoneStatusesChange,
 }: {
   project: ProjectSummary;
   tasks: Task[];
   collapsed: Record<string, boolean>;
   onToggle: (projectId: string, column: ColumnId, currentlyCollapsed: boolean) => void;
   onOpen: (taskId: string) => void;
+  doneStatuses: Set<string>;
+  onDoneStatusesChange: (next: Set<string>) => void;
 }) {
   const accentRgb = getProjectAccentRgb(project.id);
 
@@ -290,8 +311,101 @@ function ProjectCard({
 
       <div className="my-4 border-t" style={{ borderColor: `rgba(${accentRgb}, 0.18)` }} />
 
-      <Board project={project} tasks={tasks} collapsed={collapsed} onToggle={onToggle} onOpen={onOpen} />
+      <Board
+        project={project}
+        tasks={tasks}
+        collapsed={collapsed}
+        onToggle={onToggle}
+        onOpen={onOpen}
+        doneStatuses={doneStatuses}
+        onDoneStatusesChange={onDoneStatusesChange}
+      />
     </Card>
+  );
+}
+
+/**
+ * Multi-select status filter for the Done column header.
+ *
+ * Native `<select multiple>` is unusable at this size (it renders as a tall
+ * listbox, not a dropdown), and the panel rules forbid pulling in a component
+ * library for one widget — so this is a plain button + checkbox popover with
+ * an outside-click close, styled in the panel's own visual language.
+ *
+ * It must NOT toggle the accordion it lives in: the whole header row is the
+ * accordion button, so this stops propagation on click and keeps itself
+ * outside the button element (nested buttons are invalid HTML and React
+ * warns about them).
+ */
+function DoneStatusFilter({
+  selected,
+  onChange,
+}: {
+  selected: Set<string>;
+  onChange: (next: Set<string>) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [open]);
+
+  const statuses = COLUMNS.find((c) => c.id === "done")!.statuses as readonly string[];
+  const hiddenCount = statuses.filter((s) => !selected.has(s)).length;
+
+  const toggle = (status: string) => {
+    const next = new Set(selected);
+    if (next.has(status)) next.delete(status);
+    else next.add(status);
+    onChange(next);
+  };
+
+  return (
+    <div ref={ref} className="relative shrink-0" onClick={(e) => e.stopPropagation()}>
+      <button
+        onClick={() => setOpen((o) => !o)}
+        title="Filter statuses shown in this column"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        className={`flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] transition-colors ${
+          hiddenCount > 0
+            ? "border-primary/40 bg-primary/10 text-primary"
+            : "border-border bg-background text-muted-foreground hover:bg-accent"
+        }`}
+      >
+        <ListFilter className="h-3 w-3" />
+        {hiddenCount > 0 ? (
+          <span>
+            {selected.size}/{statuses.length}
+          </span>
+        ) : null}
+      </button>
+      {open ? (
+        <div className="absolute right-0 z-20 mt-1 w-44 rounded-md border border-border bg-background p-1 shadow-md">
+          <div className="px-2 py-1 text-[10px] text-muted-foreground">Statuses shown</div>
+          {statuses.map((status) => (
+            <label
+              key={status}
+              className="flex cursor-pointer items-center gap-2 rounded px-2 py-1 text-[11px] hover:bg-accent"
+            >
+              <input
+                type="checkbox"
+                checked={selected.has(status)}
+                onChange={() => toggle(status)}
+                className="h-3 w-3 accent-primary"
+              />
+              {status}
+            </label>
+          ))}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -301,12 +415,16 @@ function Board({
   collapsed,
   onToggle,
   onOpen,
+  doneStatuses,
+  onDoneStatusesChange,
 }: {
   project: ProjectSummary;
   tasks: Task[];
   collapsed: Record<string, boolean>;
   onToggle: (projectId: string, column: ColumnId, currentlyCollapsed: boolean) => void;
   onOpen: (taskId: string) => void;
+  doneStatuses: Set<string>;
+  onDoneStatusesChange: (next: Set<string>) => void;
 }) {
   const grouped = useMemo(() => {
     const map = new Map<ColumnId, Task[]>();
@@ -321,29 +439,43 @@ function Board({
   return (
     <div className="grid gap-3 lg:grid-cols-3 xl:grid-cols-6">
       {COLUMNS.map((column) => {
-        const list = grouped.get(column.id) ?? [];
+        const all = grouped.get(column.id) ?? [];
+        // The Done column is the only one with a status filter: it is the
+        // one place where "everything that ever stopped" piles up, and the
+        // interesting subset (finished vs cancelled) is an operator choice,
+        // not a scheduler fact.
+        const list =
+          column.id === "done" ? all.filter((t) => doneStatuses.has(t.status)) : all;
         const key = `${project.id}:${column.id}`;
         const isCollapsed = collapsed[key] ?? list.length === 0;
+        const filteredOut = all.length - list.length;
         return (
           <div key={column.id} className="rounded-lg border border-border bg-muted/30">
-            <button
-              onClick={() => onToggle(project.id, column.id, isCollapsed)}
-              className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left"
-              aria-expanded={!isCollapsed}
-            >
-              <span className="flex items-center gap-2 text-xs font-medium">
+            <div className="flex w-full items-center justify-between gap-1 px-3 py-2">
+              <button
+                onClick={() => onToggle(project.id, column.id, isCollapsed)}
+                className="flex min-w-0 flex-1 items-center gap-2 text-left text-xs font-medium"
+                aria-expanded={!isCollapsed}
+              >
                 <span className={`transition-transform ${isCollapsed ? "" : "rotate-90"}`}>›</span>
                 {column.label}
-              </span>
-              <Badge tone={column.id === "attention" && list.length > 0 ? "warning" : "neutral"}>{list.length}</Badge>
-            </button>
+                <Badge tone={column.id === "attention" && list.length > 0 ? "warning" : "neutral"}>
+                  {filteredOut > 0 ? `${list.length}/${all.length}` : list.length}
+                </Badge>
+              </button>
+              {column.id === "done" ? (
+                <DoneStatusFilter selected={doneStatuses} onChange={onDoneStatusesChange} />
+              ) : null}
+            </div>
             {!isCollapsed ? (
               <div
                 className="space-y-2 overflow-y-auto px-2 pb-2"
                 style={{ maxHeight: `${TASK_LIST_MAX_HEIGHT_PX}px` }}
               >
                 {list.length === 0 ? (
-                  <div className="px-1 py-3 text-center text-[11px] text-muted-foreground">empty</div>
+                  <div className="px-1 py-3 text-center text-[11px] text-muted-foreground">
+                    {all.length > 0 ? "filtered out" : "empty"}
+                  </div>
                 ) : (
                   list.map((task) => <TaskCard key={task.id} task={task} onOpen={onOpen} />)
                 )}
