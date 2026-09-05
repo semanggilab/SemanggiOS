@@ -904,7 +904,9 @@ function TranscriptBlockView({ block, role }: { block: TranscriptBlock; role?: s
         }
         right={
           <>
-            {exit !== null ? (
+            {/* exit 0 is success — showing it would badge every healthy run
+                with noise; only non-zero exits earn the warning chip. */}
+            {exit !== null && exit !== 0 ? (
               <code className="rounded bg-amber-500/15 px-1.5 py-0.5 normal-case text-[10px] text-amber-700 dark:text-amber-300">
                 exit {exit}
               </code>
@@ -1033,7 +1035,7 @@ function ToolCallView({ block }: { block: TranscriptBlock }) {
       }
       right={
         <>
-          {exit !== null ? (
+          {exit !== null && exit !== 0 ? (
             <code className="rounded bg-amber-500/15 px-1.5 py-0.5 normal-case text-[10px] text-amber-700 dark:text-amber-300">
               exit {exit}
             </code>
