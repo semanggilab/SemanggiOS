@@ -54,7 +54,7 @@ const MAX_TEXTAREA_PX = 200;
 // quick-prompt di empty state harus menyisipkan teks yang sama persis — dua
 // salinan akan menyimpang sendiri. "langsung jalankan" dieja benar karena
 // frasa itulah yang dideteksi controller untuk memutuskan CREATED vs QUEUED.
-const REGISTER_TASKS_TEXT = "PREPARE: daftarkan semua tasks yang ada di docs/tasks.md dan langsung jalankan";
+const REGISTER_TASKS_TEXT = "/prepare daftarkan semua tasks yang ada di docs/tasks.md dan langsung jalankan";
 
 export function ControlPage({ activeWorkspacePath }: { activeWorkspacePath?: string | null }) {
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
@@ -710,7 +710,7 @@ function createPlansText(docs: ProjectDocs | null): string {
   ];
   const tail = list.length > 2 ? `, dan ${list[list.length - 1]}` : "";
   return (
-    `PREPARE: Baca semua dokumen di ${list.slice(0, -1).join(", ")}${tail} (jika ada). Berdasarkan dokumen-dokumen tersebut, buat rencana implementasi yang berisi:\n` +
+    `/prepare Baca semua dokumen di ${list.slice(0, -1).join(", ")}${tail} (jika ada). Berdasarkan dokumen-dokumen tersebut, buat rencana implementasi yang berisi:\n` +
     `1. Daftar task implementasi yang harus dikerjakan, diurutkan berdasarkan dependensi\n` +
     `2. Untuk setiap task: judul, deskripsi singkat, role yang mengerjakan, temporary ID, dan task mana yang harus selesai lebih dulu (menggunakan temprary ID)\n` +
     `3. Estimasi kompleksitas (simple/medium/complex) dan level effort pengerjaan (low/normal/critical) per task\n\n` +
@@ -722,7 +722,7 @@ function createTasksText(docs: ProjectDocs | null): string {
   const hasDoc = (name: string) => docs?.docs.some((d) => d.name === name);
   const sources = ["memory/blueprint.md", ...(hasDoc("architecture") ? ["docs/architecture.md"] : []), "docs/plans.md"];
   return (
-    `PREPARE: Baca ${sources.join(", ")}.\n` +
+    `/prepare Baca ${sources.join(", ")}.\n` +
     `Analisis dokumen-dokumen tersebut dan buat daftar task implementasi yang terstruktur dalam format checklist di docs/tasks.md. \n` +
     `Untuk setiap task, sebutkan: judul, deskripsi, role yang mengerjakan, temporary ID, task mana yang harus selesai lebih dulu (dependensi menggunakan temprary ID), estimasi kompleksitas (simple/medium/complex) dan level effort pengerjaan (low/normal/critical).\n\n` +
     `Jika docs/plans.md tidak ada jangan lanjutkan proses.`
@@ -759,11 +759,11 @@ function ChatEmptyState({ docs, onPick }: { docs: ProjectDocs | null; onPick: (t
     // The mirror of the doc modal's Register button: offered only once
     // docs/tasks.md exists — registering requires a document to register.
     ...(tasksDoc?.exists === true ? [{ label: "Register tasks", text: REGISTER_TASKS_TEXT }] : []),
-    { label: "WORK:", text: "WORK: " },
-    { label: "TASK:", text: "TASK: " },
-    { label: "Check a task", text: "status TASK-" },
-    { label: "Stop a task", text: "stop TASK-" },
-    { label: "Run a task", text: "run TASK-" },
+    { label: "/work", text: "/work " },
+    { label: "/task", text: "/task " },
+    { label: "Check a task", text: "/task status " },
+    { label: "Stop a task", text: "/task stop " },
+    { label: "Run a task", text: "/task run " },
   ];
   return (
     <div className="flex flex-col items-center gap-3 py-10 text-center">
