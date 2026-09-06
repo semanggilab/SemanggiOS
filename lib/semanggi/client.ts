@@ -307,6 +307,13 @@ export type ModelMapRow = {
   evidence: string | null;
   levelsUpdatedAt: number | null;
   sources: string[];
+  /**
+   * D67: why this row may NOT be deleted (empty = deletable). Computed by the
+   * server — models.list catalog, resources.json seed, referencing brains,
+   * active executions — because the delete rule is server fact, not a guess
+   * the client should re-derive from three other endpoints.
+   */
+  deleteBlockers: string[];
 };
 
 export type ThinkingProbeSample = {
@@ -497,9 +504,26 @@ export const semanggi = {
     effortMode: EffortMode;
     evidence?: string | null;
   }) => call<{ level: ThinkingLevelEntry }>("PUT", "work/thinking-levels", entry),
+  // D67: removes ONE Model Map row — both sides (resource policy + measured
+  // levels). Same query-param identity rule as PATCH: groq model ids contain
+  // "/" and cannot survive the catch-all proxy as a path segment. Refused
+  // server-side while anything still references the model.
+  deleteModelMapRow: (provider: string, model: string) =>
+    call<{ deleted: { provider: string; model: string }; sides: string[] }>(
+      "DELETE",
+      `work/model-map?provider=${encodeURIComponent(provider)}&model=${encodeURIComponent(model)}`,
+    ),
   brains: () => call<{ brains: Brain[] }>("GET", "work/brains"),
   createBrain: (brain: Partial<Brain>) => call<{ brain: Brain }>("POST", "work/brains", brain),
   updateBrain: (id: string, patch: Partial<Brain>) => call<{ brain: Brain }>("PATCH", `work/brains/${id}`, patch),
+  // The server also clears any Brain Map cells still pinning the brain; the
+  // form only offers this after the UI's own in-use gate passes, so the
+  // clearing path is a safety net, not the normal route.
+  deleteBrain: (id: string) =>
+    call<{ brain: Brain; clearedMappings: Array<{ template: string; role: string; level: string }> }>(
+      "DELETE",
+      `work/brains/${id}`,
+    ),
   testBrain: (id: string) => call<BrainTestResult>("POST", `work/brains/${id}/test`, {}),
   // Same test, before the Brain exists as a saved row — lets "Add Brain"
   // verify a (provider, model[, acpAgent]) combination has a live agent

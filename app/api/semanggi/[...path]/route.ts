@@ -79,6 +79,12 @@ const ALLOWED: Array<{ method: string; pattern: RegExp }> = [
   { method: "POST", pattern: /^work\/resources$/ },
   { method: "PATCH", pattern: /^work\/resources$/ },
   { method: "PUT", pattern: /^work\/thinking-levels$/ },
+  // D67: row deletion from the Model Map + Brain forms. Same query-param
+  // identity rule as PATCH above; the brains delete has existed on the
+  // controller since the brain_map-clearing rework but was never exposed
+  // here, so the form had no way to reach it.
+  { method: "DELETE", pattern: /^work\/model-map$/ },
+  { method: "DELETE", pattern: /^work\/brains\/[A-Za-z0-9_-]+$/ },
   { method: "POST", pattern: /^work\/gateway\/models\/refresh$/ },
   { method: "POST", pattern: /^work\/gateway\/thinking-levels\/refresh$/ },
   { method: "POST", pattern: /^work\/gateway\/thinking-levels\/probe$/ },
@@ -177,3 +183,4 @@ export const GET = forward;
 export const POST = forward;
 export const PATCH = forward;
 export const PUT = forward;
+export const DELETE = forward;

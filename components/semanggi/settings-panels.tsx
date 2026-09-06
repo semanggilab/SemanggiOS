@@ -609,6 +609,8 @@ function BrainFormModal({
   onReloadLevels,
   onClose,
   onSubmit,
+  deleteBlockers,
+  onDelete,
 }: {
   mode: "create" | "edit";
   initial: BrainDraft;
@@ -624,6 +626,12 @@ function BrainFormModal({
   onReloadLevels: () => Promise<void>;
   onClose: () => void;
   onSubmit: (draft: BrainDraft) => Promise<void>;
+  /** D67: reasons this brain may NOT be deleted (edit mode only) — Brain Map
+   *  pins and grid defaults computed by the panel; empty = deletable. The
+   *  server would still accept the call (it clears dangling pins), so this
+   *  gate exists to make "in use" visible BEFORE the destructive click. */
+  deleteBlockers?: string[];
+  onDelete?: () => Promise<void>;
 }) {
   const [draft, setDraft] = useState<BrainDraft>(initial);
   const [busy, setBusy] = useState(false);
@@ -759,6 +767,24 @@ function BrainFormModal({
       setBusy(false);
     }
   };
+
+  const remove = async () => {
+    if (!onDelete) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await onDelete();
+      onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Edit mode only, and only when nothing routes through this brain anymore.
+  const canDelete = mode === "edit" && onDelete != null;
+  const deletable = canDelete && (deleteBlockers?.length ?? 0) === 0;
 
   const immutable = mode === "edit";
 
@@ -1081,7 +1107,21 @@ function BrainFormModal({
           />
         </Field>
 
-        <div className="flex justify-end gap-2">
+        <div className="flex items-center justify-end gap-2">
+          {canDelete ? (
+            <Button
+              variant="danger"
+              disabled={busy || !deletable}
+              title={
+                deletable
+                  ? "Delete this brain (nothing routes through it)"
+                  : `In use — ${deleteBlockers?.join("; ")}`
+              }
+              onClick={remove}
+            >
+              Delete
+            </Button>
+          ) : null}
           <Button variant="outline" onClick={onClose}>
             Cancel
           </Button>
@@ -1131,6 +1171,12 @@ export function SemanggiBrainsPanel() {
   const [thinkingLevels, setThinkingLevels] = useState<ThinkingLevelEntry[]>([]);
   const [busy, setBusy] = useState(false);
   const [modal, setModal] = useState<{ mode: "create" | "edit"; brain: Brain | null } | null>(null);
+  // D67: the delete gate needs to know what still routes through each brain —
+  // explicit Brain Map pins (by id) and the default grid (by slug name, a
+  // code constant the server cannot un-pin for you). Best-effort: if the map
+  // fails to load the Delete button just stays blocked, which is the safe
+  // side of that failure.
+  const [brainMapData, setBrainMapData] = useState<BrainMap | null>(null);
 
   useEffect(() => {
     semanggi.models().then((m) => setModels(m.models)).catch(() => setModels([]));
@@ -1147,6 +1193,7 @@ export function SemanggiBrainsPanel() {
       .catch(() => {});
     semanggi.quotaDrivers().then((r) => setDrivers(r.drivers)).catch(() => setDrivers([]));
     semanggi.thinkingLevels().then((r) => setThinkingLevels(r.levels)).catch(() => setThinkingLevels([]));
+    semanggi.brainMap().then(setBrainMapData).catch(() => setBrainMapData(null));
   }, []);
 
   // "Refresh Models" (the button): actually asks the gateway, and its answer
@@ -1175,6 +1222,39 @@ export function SemanggiBrainsPanel() {
     } finally {
       setBusy(false);
     }
+  };
+
+  // Per-brain reasons deletion is blocked (D67): every explicit Brain Map pin
+  // on the id, plus every default-grid cell naming the brain's slug. A brain
+  // serving as a grid default IS in use — deleting it would silently fall
+  // every un-pinned cell of that role to the level-candidate fallback.
+  const deleteBlockersById = useMemo(() => {
+    const byId = new Map<string, string[]>();
+    const add = (id: string, reason: string) => byId.set(id, [...(byId.get(id) ?? []), reason]);
+    for (const m of brainMapData?.mappings ?? []) {
+      add(m.brainId, `pinned: ${m.template}/${m.role}/${m.level}`);
+    }
+    const defaultNamesByBrain = new Map<string, Set<string>>();
+    for (const [tpl, roles] of Object.entries(brainMapData?.defaults ?? {})) {
+      for (const [role, levels] of Object.entries(roles)) {
+        for (const brain of data?.brains ?? []) {
+          if (Object.values(levels).includes(brain.name)) {
+            const cells = defaultNamesByBrain.get(brain.id) ?? new Set<string>();
+            cells.add(`${tpl}/${role}`);
+            defaultNamesByBrain.set(brain.id, cells);
+          }
+        }
+      }
+    }
+    for (const [id, cells] of defaultNamesByBrain) {
+      add(id, `Brain Map default grid: ${[...cells].join(", ")}`);
+    }
+    return byId;
+  }, [brainMapData, data]);
+
+  const removeBrain = async (brain: Brain) => {
+    await semanggi.deleteBrain(brain.id);
+    await reload();
   };
 
   const draftFor = (brain: Brain | null): BrainDraft =>
@@ -1368,6 +1448,8 @@ export function SemanggiBrainsPanel() {
           onReloadLevels={reloadThinkingLevels}
           onClose={() => setModal(null)}
           onSubmit={(draft) => (modal.mode === "create" ? submitCreate(draft) : submitEdit(modal.brain!.id, draft))}
+          deleteBlockers={modal.mode === "edit" ? deleteBlockersById.get(modal.brain!.id) ?? [] : undefined}
+          onDelete={modal.mode === "edit" ? () => removeBrain(modal.brain!) : undefined}
         />
       ) : null}
     </div>
@@ -1673,6 +1755,13 @@ function ModelMapModal({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Delete is edit-only, and only for a row nothing still references — the
+  // server computes `deleteBlockers` (models.list, seed, brains, active
+  // executions) so this gate and the API refusal can't disagree.
+  const deletable = !create && (row?.deleteBlockers?.length ?? 0) === 0;
+  const deleteTitle =
+    !create && !deletable ? `Blocked: ${row?.deleteBlockers?.join("; ")}` : "Delete this row from both tables";
+
   const save = async () => {
     setSaving(true);
     setError(null);
@@ -1733,17 +1822,27 @@ function ModelMapModal({
     }
   };
 
+  const remove = async () => {
+    if (!row) return;
+    setSaving(true);
+    setError(null);
+    try {
+      await semanggi.deleteModelMapRow(row.provider, row.model);
+      await onSaved();
+      onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <Modal
       title={create ? "Add model" : `${draft.provider}/${draft.model}`}
       subtitle="Resource policy (scheduling) and thinking facts (probe-measured) are written to separate tables — check a side to write it, uncheck to leave it alone."
       onClose={onClose}
       width="max-w-2xl"
-      actions={
-        <Button size="sm" disabled={saving} onClick={save}>
-          {saving ? "Saving…" : "Save"}
-        </Button>
-      }
     >
       <div className="space-y-4">
         {error ? <Notice tone="danger">{error}</Notice> : null}
@@ -1843,6 +1942,23 @@ function ModelMapModal({
               </Field>
             </div>
           ) : null}
+        </div>
+
+        {/* Bottom-right actions, same shape as the Brain form: the row this
+            form edits ends here, so its Delete/Cancel/Save belong here too —
+            not next to a title that names the model, not the action. */}
+        <div className="flex items-center justify-end gap-2">
+          {!create ? (
+            <Button variant="danger" disabled={saving || !deletable} title={deleteTitle} onClick={remove}>
+              Delete
+            </Button>
+          ) : null}
+          <Button variant="outline" disabled={saving} onClick={onClose}>
+            Cancel
+          </Button>
+          <Button disabled={saving} onClick={save}>
+            {saving ? "Saving…" : create ? "Add model" : "Save"}
+          </Button>
         </div>
       </div>
     </Modal>

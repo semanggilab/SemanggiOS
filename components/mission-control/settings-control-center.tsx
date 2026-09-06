@@ -174,10 +174,10 @@ const settingsSections: SettingsSection[] = [
   { id: "workspace", label: "Workspace", icon: Folder, group: "Workspace" },
   { id: "agents", label: "Agents", icon: Bot, group: "Workspace" },
   { id: "semanggi-projects", label: "Project", icon: FolderKanban, group: "Semanggi" },
+  { id: "semanggi-model-map", label: "Model Map", icon: Boxes, group: "Semanggi" },
   { id: "semanggi-role-map", label: "Role Level Map", icon: Users, group: "Semanggi" },
   { id: "semanggi-brains", label: "Brains", icon: Layers, group: "Semanggi" },
   { id: "semanggi-brain-map", label: "Role Brain Map", icon: Share2, group: "Semanggi" },
-  { id: "semanggi-model-map", label: "Model Map", icon: Boxes, group: "Semanggi" },
   { id: "diagnostics", label: "Diagnostics", icon: TerminalSquare, group: "System" },
   { id: "advanced", label: "Advanced", icon: Settings2, group: "System" },
   { id: "danger-zone", label: "Danger Zone", icon: AlertTriangle, group: "System", destructive: true }
