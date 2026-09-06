@@ -23,6 +23,7 @@ import {
   relativeTime,
   type Brain,
   type BrainMap,
+  type BrainMapCell,
   type BrainTestResult,
   type CatalogModel,
   type EffortMode,
@@ -40,6 +41,9 @@ import { Badge, Button, Card, Combobox, Empty, Field, LoadError, Modal, Notice, 
 
 const LEVELS: Level[] = ["low", "normal", "critical"];
 const PROFILES: Profile[] = ["fast", "balanced", "quality"];
+// Rank for client-side belowLevel checks in the cell editor — mirrors RANK in
+// the controller's brain-map.mjs.
+const LEVEL_RANK: Record<Level, number> = { low: 0, normal: 1, critical: 2 };
 
 // Mirrors CANDIDATE_LEVELS in thinking-probe.mjs — used only to show
 // progress ("3/7 levels probed"), never to decide what gets sent.
@@ -180,8 +184,12 @@ function ProjectRoleLevelModal({
 
   const resolveBrain = (template: string, role: string, level: Level) => {
     if (!brainMapData) return null;
-    const pin = brainMapData.mappings.find((m) => m.template === template && m.role === role && m.level === level);
-    if (pin?.brainName) return pin.brainName;
+    // D68: a pinned cell is an ordered list — the first member is what runs
+    // while it is live; the chain behind it is named by the server's
+    // brainPeers, not re-derived here.
+    const cell = brainMapData.mappings.find((m) => m.template === template && m.role === role && m.level === level);
+    const first = cell ? [...cell.brains].sort((a, b) => a.position - b.position)[0] : undefined;
+    if (first?.brainName) return first.brainName;
     const defaultName = brainMapData.defaults?.[template]?.[role]?.[level] ?? null;
     if (defaultName && brainMapData.brains.some((b) => b.name === defaultName)) return defaultName;
     return brainMapData.brains
@@ -257,6 +265,9 @@ function ProjectRoleLevelModal({
                   const level = effectiveLevel(row);
                   const changed = level !== row.level;
                   const brainName = changed ? resolveBrain(data.template, row.role, level) : row.brain?.name ?? null;
+                  // The failover chain behind the first brain (D68) — named so
+                  // the column answers "and then who?", not just "who?".
+                  const peers = !changed && row.brainPeers?.length ? row.brainPeers : [];
                   return (
                     <tr key={row.role} className="border-b border-border/50">
                       <td className="px-2 py-1">
@@ -275,6 +286,9 @@ function ProjectRoleLevelModal({
                       </td>
                       <td className="px-2 py-1 text-muted-foreground">
                         {brainName ?? <span title="No brain resolves at this level — pin one in the Brain Map">none</span>}
+                        {peers.length > 0 ? (
+                          <span title={`Failover order: ${peers.join(" → ")}`}> +{peers.length}</span>
+                        ) : null}
                       </td>
                     </tr>
                   );
@@ -1224,15 +1238,18 @@ export function SemanggiBrainsPanel() {
     }
   };
 
-  // Per-brain reasons deletion is blocked (D67): every explicit Brain Map pin
-  // on the id, plus every default-grid cell naming the brain's slug. A brain
-  // serving as a grid default IS in use — deleting it would silently fall
-  // every un-pinned cell of that role to the level-candidate fallback.
+  // Per-brain reasons deletion is blocked (D67): every explicit Brain Map
+  // membership (a cell's ordered list may name the same brain once — D68),
+  // plus every default-grid cell naming the brain's slug. A brain serving as
+  // a grid default IS in use — deleting it would silently fall every
+  // un-pinned cell of that role to the level-candidate fallback.
   const deleteBlockersById = useMemo(() => {
     const byId = new Map<string, string[]>();
     const add = (id: string, reason: string) => byId.set(id, [...(byId.get(id) ?? []), reason]);
-    for (const m of brainMapData?.mappings ?? []) {
-      add(m.brainId, `pinned: ${m.template}/${m.role}/${m.level}`);
+    for (const cell of brainMapData?.mappings ?? []) {
+      for (const entry of cell.brains) {
+        add(entry.brainId, `pinned: ${cell.template}/${cell.role}/${cell.level}`);
+      }
     }
     const defaultNamesByBrain = new Map<string, Set<string>>();
     for (const [tpl, roles] of Object.entries(brainMapData?.defaults ?? {})) {
@@ -1573,52 +1590,192 @@ export function SemanggiRoleMapPanel() {
 
 // --- Brain Map ---------------------------------------------------------------
 
+// --- Brain Map ----------------------------------------------------------------
+
+/**
+ * Editor for one grid cell's ordered failover list (D68).
+ *
+ * Numbered rows with ↑/↓/×, not inline chips and not drag-and-drop: the ORDER
+ * is the entire meaning of this cell — which brain is tried first, and who
+ * takes over when it is down — so the control has to make position visible
+ * and deliberate. Dragging hides swaps behind a gesture; a number says it.
+ */
+function BrainCellModal({
+  template,
+  role,
+  level,
+  cell,
+  brains,
+  defaults,
+  onClose,
+  onSaved,
+}: {
+  template: string;
+  role: string;
+  level: Level;
+  cell: BrainMapCell | undefined;
+  brains: BrainMap["brains"];
+  defaults: BrainMap["defaults"];
+  onClose: () => void;
+  onSaved: () => Promise<void> | void;
+}) {
+  const initial = cell ? [...cell.brains].sort((a, b) => a.position - b.position).map((e) => e.brainId) : [];
+  const [ids, setIds] = useState<string[]>(initial);
+  const [adding, setAdding] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const byId = useMemo(() => new Map(brains.map((b) => [b.id, b])), [brains]);
+  const remaining = brains.filter((b) => !ids.includes(b.id));
+  const defaultName = defaults?.[template]?.[role]?.[level] ?? null;
+
+  const move = (index: number, delta: number) => {
+    const next = [...ids];
+    const target = index + delta;
+    if (target < 0 || target >= next.length) return;
+    [next[index], next[target]] = [next[target], next[index]];
+    setIds(next);
+  };
+  const remove = (index: number) => setIds(ids.filter((_, i) => i !== index));
+  const add = () => {
+    if (!adding || ids.includes(adding)) return;
+    setIds([...ids, adding]);
+    setAdding("");
+  };
+
+  const save = async (list: string[] | null) => {
+    setSaving(true);
+    setError(null);
+    try {
+      await semanggi.setBrainCell(template, role, level, list);
+      await onSaved();
+      onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal
+      title={`${template} · ${role} · ${level}`}
+      subtitle="Ordered failover list — the first live member runs; when it is unavailable the next one takes over, and it fails back automatically on recovery."
+      onClose={onClose}
+      width="max-w-lg"
+    >
+      <div className="space-y-4">
+        {error ? <Notice tone="danger">{error}</Notice> : null}
+
+        <div className="space-y-2">
+          {ids.length === 0 ? (
+            <p className="rounded-md border border-dashed border-border px-3 py-4 text-center text-xs text-muted-foreground">
+              Empty list — the cell follows the grid default{defaultName ? ` (${defaultName})` : ""}, then level candidates.
+            </p>
+          ) : (
+            ids.map((id, index) => {
+              const brain = byId.get(id);
+              // Client-side belowLevel for members not saved yet — rank
+              // comparison, mirroring the server's RANK check. Above-level
+              // brains get no badge: paying more is an operator's right.
+              const below =
+                brain && LEVEL_RANK[brain.level] != null && LEVEL_RANK[brain.level] < LEVEL_RANK[level];
+              return (
+                <div key={id} className="flex items-center gap-2 rounded-md border border-border px-2 py-1.5">
+                  <span className="w-5 text-right font-mono text-xs text-muted-foreground">{index + 1}.</span>
+                  <div className="min-w-0 flex-1">
+                    <span className="text-xs font-medium">{brain?.name ?? id}</span>
+                    {brain ? <span className="ml-1 text-xs text-muted-foreground">— {brain.level}</span> : null}
+                    {below ? (
+                      <Badge tone="warning" title="This brain's own class is below the cell's level">
+                        below level
+                      </Badge>
+                    ) : null}
+                  </div>
+                  <Button variant="ghost" size="sm" disabled={index === 0 || saving} onClick={() => move(index, -1)}>
+                    ↑
+                  </Button>
+                  <Button variant="ghost" size="sm" disabled={index === ids.length - 1 || saving} onClick={() => move(index, 1)}>
+                    ↓
+                  </Button>
+                  <Button variant="ghost" size="sm" disabled={saving} onClick={() => remove(index)}>
+                    ✕
+                  </Button>
+                </div>
+              );
+            })
+          )}
+        </div>
+
+        <div className="flex items-center gap-2">
+          <Select value={adding} onChange={setAdding} disabled={saving || remaining.length === 0} className="min-w-0 flex-1">
+            <option value="">{remaining.length === 0 ? "every brain is already in the list" : "add a brain…"}</option>
+            {remaining.map((b) => (
+              <option key={b.id} value={b.id}>
+                {b.name} — {b.level}
+              </option>
+            ))}
+          </Select>
+          <Button variant="outline" size="sm" disabled={!adding || saving} onClick={add}>
+            Add
+          </Button>
+        </div>
+
+        <div className="flex items-center justify-end gap-2 border-t border-border pt-3">
+          {initial.length > 0 ? (
+            <Button variant="danger" size="sm" disabled={saving} onClick={() => save(null)}>
+              Clear cell
+            </Button>
+          ) : null}
+          <Button variant="outline" size="sm" disabled={saving} onClick={onClose}>
+            Cancel
+          </Button>
+          <Button size="sm" disabled={saving || ids.length === 0} onClick={() => save(ids)}>
+            {saving ? "Saving…" : "Save order"}
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 export function SemanggiBrainMapPanel() {
   const { data, error, reload } = useAsync(() => semanggi.brainMap(), []);
-  const [busy, setBusy] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
+  const [editing, setEditing] = useState<{ template: string; role: string; level: Level } | null>(null);
 
   const levels: Level[] = data?.levels ?? LEVELS;
 
-  // Pinned cells, keyed by (template, role, level) — one pin per grid cell.
+  // Pinned cells, keyed by (template, role, level) — each holds its ordered
+  // member list, position 0 first.
   const pinned = useMemo(() => {
-    const map = new Map<string, BrainMap["mappings"][number]>();
+    const map = new Map<string, BrainMapCell>();
     for (const m of data?.mappings ?? []) map.set(`${m.template}/${m.role}/${m.level}`, m);
     return map;
   }, [data]);
 
   const brainByName = useMemo(() => new Map((data?.brains ?? []).map((b) => [b.name, b])), [data]);
 
-  const set = async (template: string, role: string, level: Level, brainId: string | null) => {
-    setBusy(true);
-    setSaveError(null);
-    try {
-      await semanggi.setBrainMapping(template, role, level, brainId);
-      await reload();
-    } catch (err) {
-      setSaveError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const stale = (data?.mappings ?? []).filter((m) => m.stale);
+  // Stale members now hide inside cells: a cell whose entry points at a brain
+  // that no longer exists will never run that member.
+  const stale = (data?.mappings ?? []).flatMap((m) =>
+    m.brains.filter((e) => e.stale).map((e) => `${m.template}/${m.role}/${m.level} → ${e.brainName ?? e.brainId}`),
+  );
 
   return (
     <div className="w-full space-y-4">
       {error ? <LoadError error={error} onRetry={reload} /> : null}
-      {saveError ? <Notice tone="danger">{saveError}</Notice> : null}
 
       <Notice tone="info">
-        The grid pins which Brain each (role, level) cell uses. Unpinned cells follow the grid defaults, then the level
-        candidates. A brain whose own class is below the cell&apos;s level is used but marked{" "}
-        <span className="font-medium">below level</span> — an explicit operator choice, never a silent downgrade.
+        Each cell holds an ordered failover list: the first live brain runs, the next takes over when it is down, and it
+        fails back on recovery — re-evaluated at every dispatch. Unlisted cells follow the grid defaults, then level
+        candidates. A brain below the cell&apos;s level is used but marked <span className="font-medium">below level</span>{" "}
+        — an explicit operator choice, never a silent downgrade.
       </Notice>
 
       {stale.length > 0 ? (
         <Notice tone="danger">
-          {stale.length} pin(s) point at a brain that no longer exists and will never run:{" "}
-          {stale.map((m) => `${m.template}/${m.role}/${m.level}`).join(", ")}. Clear them or pick a live brain.
+          {stale.length} list member(s) point at a brain that no longer exists and will never run: {stale.join(", ")}.
+          Remove them from the list.
         </Notice>
       ) : null}
 
@@ -1648,33 +1805,34 @@ export function SemanggiBrainMapPanel() {
                       </div>
                     </td>
                     {levels.map((level) => {
-                      const pin = pinned.get(`${template}/${role}/${level}`);
+                      const cell = pinned.get(`${template}/${role}/${level}`);
+                      const members = cell ? [...cell.brains].sort((a, b) => a.position - b.position) : [];
                       const defaultName = data?.defaults?.[template]?.[role]?.[level] ?? null;
                       const defaultBrain = defaultName ? brainByName.get(defaultName) : undefined;
-                      // The value the cell resolves to right now: a live pin,
-                      // else the grid default (when its brain exists here),
-                      // else the level candidates — shown as "(auto)".
-                      const value = pin?.brainId ?? defaultBrain?.id ?? "";
                       return (
-                        <td key={level} className="px-2 py-1">
-                          <div className="flex items-center gap-1">
-                            <Select
-                              value={value}
-                              disabled={busy}
-                              onChange={(v) => set(template, role, level, v || null)}
-                              className="min-w-[10rem]"
-                            >
-                              <option value="">
-                                {defaultBrain ? `default: ${defaultName}` : "(auto from level)"}
-                              </option>
-                              {(data?.brains ?? []).map((b) => (
-                                <option key={b.id} value={b.id}>
-                                  {b.name} — {b.level}
-                                </option>
-                              ))}
-                            </Select>
-                            {pin?.belowLevel ? <Badge tone="warning">below level</Badge> : null}
-                          </div>
+                        <td key={level} className="px-2 py-1 align-top">
+                          <button
+                            type="button"
+                            onClick={() => setEditing({ template, role, level })}
+                            className="group flex min-h-[2rem] w-full flex-col items-start gap-1 rounded-md border border-border/60 px-2 py-1 text-left hover:border-ring"
+                            title="Edit the ordered failover list"
+                          >
+                            {members.length > 0 ? (
+                              members.map((m, i) => (
+                                <span key={m.brainId} className="flex items-center gap-1">
+                                  <span className="font-mono text-[10px] text-muted-foreground">{i + 1}</span>
+                                  <span className={m.stale ? "line-through opacity-60" : ""}>
+                                    {m.brainName ?? m.brainId}
+                                  </span>
+                                  {m.belowLevel ? <Badge tone="warning">below</Badge> : null}
+                                </span>
+                              ))
+                            ) : defaultBrain ? (
+                              <span className="text-muted-foreground">default: {defaultName}</span>
+                            ) : (
+                              <span className="text-muted-foreground">(auto from level)</span>
+                            )}
+                          </button>
                         </td>
                       );
                     })}
@@ -1685,6 +1843,19 @@ export function SemanggiBrainMapPanel() {
           </div>
         </Card>
       ))}
+
+      {editing ? (
+        <BrainCellModal
+          template={editing.template}
+          role={editing.role}
+          level={editing.level}
+          cell={pinned.get(`${editing.template}/${editing.role}/${editing.level}`)}
+          brains={data?.brains ?? []}
+          defaults={data?.defaults ?? {}}
+          onClose={() => setEditing(null)}
+          onSaved={reload}
+        />
+      ) : null}
     </div>
   );
 }

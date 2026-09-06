@@ -1208,6 +1208,18 @@ function PlanTable({ steps, created }: { steps: PlanStep[]; created: boolean }) 
                         when a result disappoints and someone asks "who picked
                         this". */}
                     <span className="ml-1 text-[10px] text-muted-foreground">({step.brainSource})</span>
+                    {/* The failover chain behind the first brain (D68) —
+                        collapsed to "+N" with the full order in the tooltip:
+                        the chain matters when the first brain goes down, not
+                        on every read. */}
+                    {step.brainList && step.brainList.length > 1 ? (
+                      <span
+                        className="ml-1 text-[10px] text-muted-foreground"
+                        title={`Failover order: ${step.brainList.join(" → ")}`}
+                      >
+                        +{step.brainList.length - 1}
+                      </span>
+                    ) : null}
                   </span>
                 ) : (
                   <span className="text-red-600 dark:text-red-300">none yet</span>

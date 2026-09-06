@@ -58,16 +58,24 @@ export type RoleLevels = {
   }>;
 };
 
-export type BrainMapping = {
-  template: string;
-  role: string;
-  level: Level;
+/** One member of a Brain Map cell's ordered failover list (D68). Position 0
+ *  is tried first at every dispatch attempt; a disabled member is skipped but
+ *  keeps its slot, so re-enabling it fails back automatically. */
+export type BrainMapEntry = {
+  position: number;
   brainId: string;
   brainName: string | null;
   brainLevel: Level | null;
   belowLevel: boolean;
   stale: boolean;
-  actor: string;
+};
+
+/** One (template, role, level) cell and its full ordered member list. */
+export type BrainMapCell = {
+  template: string;
+  role: string;
+  level: Level;
+  brains: BrainMapEntry[];
   updatedAt: number;
 };
 
@@ -78,11 +86,12 @@ export type BrainMap = {
   /** template → role → level → default brain NAME (the grid's initial fill). */
   defaults: Record<string, Record<string, Record<string, string>>>;
   brains: Array<{ id: string; name: string; level: Level }>;
-  mappings: BrainMapping[];
+  mappings: BrainMapCell[];
 };
 
 /** One row of the "Project Role Level" modal: a role actually registered on
- *  the project, the level it would run at, and the brain that level maps to. */
+ *  the project, the level it would run at, and the brain chain that level
+ *  maps to — first live member plus the named failover peers behind it. */
 export type ProjectRoleLevel = {
   role: string;
   level: Level;
@@ -91,6 +100,7 @@ export type ProjectRoleLevel = {
   brain: { id: string; name: string } | null;
   brainSource: string;
   brainNote: string | null;
+  brainPeers: string[];
 };
 
 export type ProjectRoleLevels = {
@@ -368,6 +378,9 @@ export type PlanStep = {
   deliverable: string | null;
   title: string;
   brain: string | null;
+  /** The full ordered failover chain behind `brain` (D68) — first entry is
+   *  `brain` itself when one resolves. */
+  brainList: string[];
   brainSource: string | null;
   brainNote: string | null;
   after: string[];
@@ -556,8 +569,10 @@ export const semanggi = {
   setRoleLevel: (template: string, profile: Profile, role: string, level: Level | null) =>
     call<unknown>("PUT", "work/role-levels", { template, profile, role, level }),
   brainMap: () => call<BrainMap>("GET", "work/brain-map"),
-  setBrainMapping: (template: string, role: string, level: Level, brainId: string | null) =>
-    call<unknown>("PUT", "work/brain-map", { template, role, level, brainId }),
+  // D68: a cell holds an ORDERED failover list. `brainIds[0]` is tried first
+  // at every dispatch attempt; null/[] clears the cell back to grid default.
+  setBrainCell: (template: string, role: string, level: Level, brainIds: string[] | null) =>
+    call<unknown>("PUT", "work/brain-map", { template, role, level, brainIds }),
   projectRoleLevels: (id: string, profile?: Profile) => {
     const q = profile ? `?profile=${encodeURIComponent(profile)}` : "";
     return call<ProjectRoleLevels>("GET", `work/projects/${id}/role-levels${q}`);
