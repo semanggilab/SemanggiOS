@@ -71,6 +71,7 @@ const ALLOWED: Array<{ method: string; pattern: RegExp }> = [
   // terdaftar di sini.
   { method: "PUT", pattern: /^work\/projects\/[A-Za-z0-9_-]+\/docs\/[a-z-]+$/ },
   { method: "GET", pattern: /^work\/gateway\/(models|thinking-levels)$/ },
+  { method: "GET", pattern: /^work\/quota-drivers$/ },
   { method: "POST", pattern: /^work\/gateway\/models\/refresh$/ },
   { method: "POST", pattern: /^work\/gateway\/thinking-levels\/refresh$/ },
   { method: "POST", pattern: /^work\/gateway\/thinking-levels\/probe$/ },

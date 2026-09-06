@@ -20,7 +20,8 @@ export type Brain = {
   quotaResetShortMs?: number | null;
   quotaResetLongMs?: number | null;
   level: Level;
-  category: string | null;
+  /** D64: which quota driver classifies this brain ("generic" = none). */
+  quotaDriver?: string;
   enabled: boolean;
   availability?: string;
   nextAvailableAt?: number | null;
@@ -69,7 +70,7 @@ export type BrainMap = {
   levels: Level[];
   /** template → role → level → default brain NAME (the grid's initial fill). */
   defaults: Record<string, Record<string, Record<string, string>>>;
-  brains: Array<{ id: string; name: string; level: Level; category: string | null }>;
+  brains: Array<{ id: string; name: string; level: Level }>;
   mappings: BrainMapping[];
 };
 
@@ -260,6 +261,13 @@ export type GatewayModel = {
   available?: boolean;
 };
 
+/** D64: one registry entry — which gateway labels a quota driver answers to. */
+export type QuotaDriverInfo = {
+  id: string;
+  providerKeys: string[];
+  tier: string | null;
+};
+
 export type ThinkingLevelEntry = {
   provider: string;
   model: string;
@@ -436,6 +444,7 @@ export const semanggi = {
   // the one that actually asks the gateway and persists the answer here.
   gatewayModels: () => call<{ models: GatewayModel[] }>("GET", "work/gateway/models"),
   refreshGatewayModels: () => call<{ models: GatewayModel[] }>("POST", "work/gateway/models/refresh", {}),
+  quotaDrivers: () => call<{ drivers: QuotaDriverInfo[] }>("GET", "work/quota-drivers"),
   thinkingLevels: (provider?: string, model?: string) => {
     const q = provider && model ? `?provider=${encodeURIComponent(provider)}&model=${encodeURIComponent(model)}` : "";
     return call<{ levels: ThinkingLevelEntry[] }>("GET", `work/gateway/thinking-levels${q}`);

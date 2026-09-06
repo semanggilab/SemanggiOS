@@ -26,6 +26,7 @@ import {
   type Level,
   type Profile,
   type ProjectRoleLevel,
+  type QuotaDriverInfo,
   type ThinkingLevelEntry,
   type ThinkingProbeSample,
   type ThinkingProbeStatus,
@@ -442,7 +443,6 @@ type BrainDraft = {
   mode: string;
   acpAgent: string;
   level: Level;
-  category: string;
   description: string;
   enabled: boolean;
   /** "" leaves the stored/default value alone; a numeric string stores an
@@ -462,7 +462,6 @@ const EMPTY_DRAFT: BrainDraft = {
   mode: "interactive",
   acpAgent: "",
   level: "normal",
-  category: "",
   description: "",
   enabled: true,
   quotaResetShortMs: "",
@@ -594,6 +593,11 @@ function BrainFormModal({
   initial: BrainDraft;
   models: CatalogModel[];
   gatewayModels: GatewayModel[];
+  /** D64: live brains feed the provider/model options for labels the gateway
+   *  cache does not carry (claude-code is an ACP harness, not a models.list
+   *  provider) — without them those brains would become uneditable. */
+  brains: Brain[];
+  drivers: QuotaDriverInfo[];
   onRefreshModels: () => void;
   thinkingLevels: ThinkingLevelEntry[];
   onReloadLevels: () => Promise<void>;
@@ -607,23 +611,38 @@ function BrainFormModal({
   const [refreshingLevels, setRefreshingLevels] = useState(false);
   const [probeSamples, setProbeSamples] = useState<ThinkingProbeSample[] | null>(null);
 
+  // D64: options come from what is actually REGISTERED — the gateway models
+  // cache plus the brains that already exist. The static routing catalog is
+  // deliberately absent: it polluted the union with entries no live provider
+  // answers to, which is exactly what made the field look frozen. "Copy from
+  // catalog" below still offers the catalog, explicitly labelled as such.
   const providerOptions = useMemo(() => {
     const set = new Set<string>();
     for (const m of gatewayModels) if (m.provider) set.add(m.provider);
-    for (const m of models) if (m.provider) set.add(m.provider);
+    for (const b of brains) if (b.provider) set.add(b.provider);
     return Array.from(set).sort();
-  }, [gatewayModels, models]);
+  }, [gatewayModels, brains]);
 
   const modelOptions = useMemo(() => {
     const set = new Set<string>();
-    for (const m of gatewayModels) {
-      if (!draft.provider || m.provider === draft.provider) set.add(m.id);
+    const gatewayHasProvider = gatewayModels.some((m) => m.provider === draft.provider);
+    if (gatewayHasProvider) {
+      for (const m of gatewayModels) if (m.provider === draft.provider) set.add(m.id);
+    } else {
+      // ACP harness providers (claude-code) never appear in models.list;
+      // their "models" are the ones the existing brains carry.
+      for (const b of brains) if (b.provider === draft.provider && b.model) set.add(b.model);
     }
-    for (const m of models) {
-      if (!draft.provider || m.provider === draft.provider) set.add(m.model);
-    }
+    if (draft.model) set.add(draft.model);
     return Array.from(set).sort();
-  }, [gatewayModels, models, draft.provider]);
+  }, [gatewayModels, brains, draft.provider, draft.model]);
+
+  // Which driver owns the label currently in the form — the difference
+  // between "quota parking with real facts" and "generic null windows".
+  const driverId = useMemo(() => {
+    const key = String(draft.provider ?? "").toLowerCase();
+    return drivers.find((d) => d.providerKeys.includes(key))?.id ?? "generic";
+  }, [drivers, draft.provider]);
 
   const levelOptions = useMemo(() => {
     const entry = thinkingLevels.find((t) => t.provider === draft.provider && t.model === draft.model);
@@ -763,7 +782,14 @@ function BrainFormModal({
             </Select>
           </Field>
 
-          <Field label="Provider">
+          <Field
+            label="Provider"
+            hint={
+              driverId === "generic"
+                ? "No quota driver knows this label — quota windows stay generic (null)."
+                : `Quota driver: ${driverId}.`
+            }
+          >
             <div className="flex items-center gap-2">
               <Combobox
                 value={draft.provider}
@@ -883,17 +909,9 @@ function BrainFormModal({
             />
           </Field>
 
-          <Field
-            label="Category"
-            hint="Leave blank to allow every category."
-          >
-            <input
-              value={draft.category}
-              onChange={(e) => setDraft({ ...draft, category: e.target.value })}
-              placeholder="coding / analysis / review"
-              className="h-8 rounded-md border border-border bg-background px-2 text-xs outline-none focus:ring-1 focus:ring-ring"
-            />
-          </Field>
+          {/* D64: the Category field is gone — the dispatch path stopped
+              reading it when the Brain Map grid (template × role × level)
+              became the decider, and the column was dropped from the schema. */}
 
           {/* D51/D52: the reset schedule decides what a quota refusal MEANS —
               a shortest window under 10 minutes is retried in place (up to
@@ -997,6 +1015,7 @@ export function SemanggiBrainsPanel() {
   const { data, error, reload } = useAsync(() => semanggi.brains(), []);
   const [models, setModels] = useState<CatalogModel[]>([]);
   const [gatewayModels, setGatewayModels] = useState<GatewayModel[]>([]);
+  const [drivers, setDrivers] = useState<QuotaDriverInfo[]>([]);
   const [thinkingLevels, setThinkingLevels] = useState<ThinkingLevelEntry[]>([]);
   const [busy, setBusy] = useState(false);
   const [modal, setModal] = useState<{ mode: "create" | "edit"; brain: Brain | null } | null>(null);
@@ -1004,6 +1023,7 @@ export function SemanggiBrainsPanel() {
   useEffect(() => {
     semanggi.models().then((m) => setModels(m.models)).catch(() => setModels([]));
     semanggi.gatewayModels().then((m) => setGatewayModels(m.models)).catch(() => setGatewayModels([]));
+    semanggi.quotaDrivers().then((r) => setDrivers(r.drivers)).catch(() => setDrivers([]));
     semanggi.thinkingLevels().then((r) => setThinkingLevels(r.levels)).catch(() => setThinkingLevels([]));
   }, []);
 
@@ -1047,7 +1067,6 @@ export function SemanggiBrainsPanel() {
           mode: brain.mode ?? "interactive",
           acpAgent: brain.acpAgent ?? "",
           level: brain.level,
-          category: brain.category ?? "",
           description: brain.description ?? "",
           enabled: brain.enabled,
           quotaResetShortMs: brain.quotaResetShortMs != null ? String(brain.quotaResetShortMs) : "",
@@ -1059,7 +1078,6 @@ export function SemanggiBrainsPanel() {
     await semanggi.createBrain({
       ...draft,
       thinking: draft.thinking || null,
-      category: draft.category || null,
       effortEvidence: draft.effortEvidence || null,
       mode: draft.mode,
       acpAgent: draft.acpAgent || null,
@@ -1074,7 +1092,6 @@ export function SemanggiBrainsPanel() {
   const submitEdit = async (id: string, draft: BrainDraft) => {
     await semanggi.updateBrain(id, {
       level: draft.level,
-      category: draft.category || null,
       description: draft.description,
       thinking: draft.thinking || null,
       effortMode: draft.effortMode,
@@ -1110,7 +1127,7 @@ export function SemanggiBrainsPanel() {
             <table className="w-full text-left text-xs">
               <thead className="bg-muted/50">
                 <tr>
-                  {["Name", "Model", "Effort", "Level", "Category", "Availability", "Quota", ""].map((h) => (
+                  {["Name", "Model", "Effort", "Level", "Availability", "Quota", ""].map((h) => (
                     <th key={h} className="px-2 py-1 font-medium">
                       {h}
                     </th>
@@ -1153,7 +1170,6 @@ export function SemanggiBrainsPanel() {
                     <td className="px-2 py-1">
                       <Badge tone={brain.level === "critical" ? "warning" : "neutral"}>{brain.level}</Badge>
                     </td>
-                    <td className="px-2 py-1 text-muted-foreground">{brain.category ?? "—"}</td>
                     <td className="px-2 py-1">
                       <Badge tone={brain.availability === "AVAILABLE" ? "success" : "neutral"}>{brain.availability ?? "UNKNOWN"}</Badge>
                     </td>
@@ -1199,6 +1215,8 @@ export function SemanggiBrainsPanel() {
           initial={draftFor(modal.brain)}
           models={models}
           gatewayModels={gatewayModels}
+          brains={data?.brains ?? []}
+          drivers={drivers}
           onRefreshModels={refreshGatewayModels}
           thinkingLevels={thinkingLevels}
           onReloadLevels={reloadThinkingLevels}
