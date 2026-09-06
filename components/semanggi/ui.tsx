@@ -9,8 +9,9 @@
 // hulu. Yang ditiru adalah bahasa visualnya (kartu, lencana status, toolbar),
 // bukan kodenya.
 
-import { useEffect, useId, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
+import { Check, Copy } from "lucide-react";
 
 export function PageShell({
   title,
@@ -209,6 +210,106 @@ export function Button({
       className={`${base} ${sizes[size]} ${variants[variant]}${className ? ` ${className}` : ""}`}
     >
       {children}
+    </button>
+  );
+}
+
+/**
+ * Copy text to the clipboard, reporting success honestly.
+ *
+ * `navigator.clipboard` only exists in SECURE contexts — and the cluster's
+ * UI is served over plain HTTP from a non-localhost origin, where the modern
+ * API is simply absent. The legacy textarea path is therefore not a
+ * fallback for old browsers but the path that actually runs in production;
+ * both are tried, and failure is returned (not thrown) so a caller can
+ * choose not to flash a fake "copied" checkmark.
+ */
+export async function copyToClipboard(text: string): Promise<boolean> {
+  try {
+    if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    // Permission denied or a non-secure context rejecting the promise —
+    // fall through to the legacy path before giving up.
+  }
+  try {
+    const area = document.createElement("textarea");
+    area.value = text;
+    area.setAttribute("readonly", "");
+    // Off-screen but still rendered — a display:none node has nothing for
+    // execCommand to select.
+    area.style.position = "fixed";
+    area.style.opacity = "0";
+    document.body.appendChild(area);
+    area.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(area);
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Copy-to-clipboard affordance with a brief "copied" checkmark.
+ *
+ * Two shapes because it lives in two kinds of places:
+ *  - `as="button"` (default) — its own button, for headers and regions.
+ *  - `as="span"` — for sites already INSIDE a clickable card/row rendered
+ *    as a real <button> (task cards, registered-task rows): a button nested
+ *    in a button is invalid HTML, so the affordance degrades to a span with
+ *    a click handler. The click ALWAYS stops propagation, or copying a task
+ *    id would also open the task.
+ *
+ * The icon defaults to 1em so it tracks the surrounding font size — the
+ * caller sets the text size context, the icon follows.
+ */
+export function CopyButton({
+  text,
+  label = "Copy to clipboard",
+  as = "button",
+  className = "",
+  iconClassName = "h-[1em] w-[1em]",
+}: {
+  text: string;
+  label?: string;
+  as?: "button" | "span";
+  className?: string;
+  iconClassName?: string;
+}) {
+  const [copied, setCopied] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (timer.current) clearTimeout(timer.current);
+    },
+    [],
+  );
+  const handle = async (event: { stopPropagation: () => void; preventDefault: () => void }) => {
+    event.stopPropagation();
+    event.preventDefault();
+    const ok = await copyToClipboard(text);
+    if (!ok) return;
+    setCopied(true);
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(() => setCopied(false), 1200);
+  };
+  const icon = copied ? <Check className={iconClassName} /> : <Copy className={iconClassName} />;
+  const shared = {
+    title: copied ? "Copied" : label,
+    "aria-label": label,
+    onClick: (event: ReactMouseEvent) => void handle(event),
+    className: `inline-flex shrink-0 cursor-pointer items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground ${className}`,
+  };
+  return as === "span" ? (
+    <span role="button" tabIndex={-1} {...shared}>
+      {icon}
+    </span>
+  ) : (
+    <button type="button" {...shared}>
+      {icon}
     </button>
   );
 }

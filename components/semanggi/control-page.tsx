@@ -40,7 +40,7 @@ import {
   type ProjectDocs,
   type ProjectSummary,
 } from "@/lib/semanggi/client";
-import { Badge, Button, Empty, LoadError, Modal, Notice, Select } from "./ui";
+import { Badge, Button, CopyButton, Empty, LoadError, Modal, Notice, Select } from "./ui";
 import { TaskDialog } from "./task-dialog";
 
 type Message =
@@ -534,11 +534,13 @@ function DocPill({ doc, onOpen }: { doc: ProjectDocStatus; onOpen: () => void })
  * rendered markdown on the right — and every keystroke re-renders the
  * preview from the SAME draft state, so what Save persists is exactly what
  * the operator was shown, not what they hope they typed. Save hides the
- * editor and restores the reader; the button pair is mutually exclusive
- * because "Edit" while already editing is a no-op and "Save" while reading
- * has nothing to save. The pair is rendered in the modal header next to the
- * title (Modal's `actions`): it belongs to the document being viewed, and
- * floating it above the content made it shift position on every mode swap.
+ * editor and restores the reader; Cancel sits next to Save and appears and
+ * disappears WITH it — it discards the draft and returns to the reader, and
+ * the next Edit re-seeds from the saved content, so discarded text can't
+ * resurrect. The buttons are rendered in the modal header next to the title
+ * (Modal's `actions`): they belong to the document being viewed, and
+ * floating them above the content made them shift position on every mode
+ * swap.
  * The two split panes scroll in lockstep (proportional sync) so the preview
  * keeps showing the region being edited instead of drifting away from it.
  *
@@ -575,8 +577,10 @@ function DocModal({
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   // memory/ docs (blueprint, decisions) are the agents' two-tier bootstrap
-  // territory (spec §9) — the controller refuses PUTs on them, so the Edit
-  // button never appears for them either. The reader stays for both dirs.
+  // territory (spec §9) — the controller refuses PUTs on them (D55), so the
+  // Edit button never appears for them either: `editable` is the UI's half
+  // of that lock, keyed off the server-reported dir rather than the doc's
+  // name, so the two halves can't drift. The reader stays for both dirs.
   const [dir, setDir] = useState<string | null>(null);
   const editable = dir === "docs";
 
@@ -672,9 +676,26 @@ function DocModal({
       actions={
         content !== null && !error ? (
           editing ? (
-            <Button size="sm" disabled={saving} onClick={() => void save()}>
-              {saving ? "Saving…" : "Save"}
-            </Button>
+            // Cancel appears and disappears WITH Save — one edit mode, one
+            // pair: it discards the draft and returns to the reader. The
+            // next Edit re-seeds from the saved content (startEditing), so
+            // nothing the operator threw away can resurrect.
+            <>
+              <Button size="sm" disabled={saving} onClick={() => void save()}>
+                {saving ? "Saving…" : "Save"}
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={saving}
+                onClick={() => {
+                  setEditing(false);
+                  setSaveError(null);
+                }}
+              >
+                Cancel
+              </Button>
+            </>
           ) : editable ? (
             <Button size="sm" variant="outline" onClick={startEditing}>
               Edit
@@ -718,17 +739,36 @@ function DocModal({
                 spellCheck={false}
                 className="h-[62vh] w-full resize-none rounded-md border border-border bg-card p-3 font-mono text-xs leading-relaxed outline-none focus:ring-1 focus:ring-ring"
               />
-              <div
-                ref={previewRef}
-                onScroll={() => syncScroll("preview")}
-                className="h-[62vh] overflow-y-auto rounded-md border border-border bg-background p-3"
-              >
-                <MarkdownView content={draft} />
+              {/* Copy anchors to a NON-scrolling wrapper: an absolute child
+                  of the scroll container itself would scroll away with the
+                  content, and a copy control that vanishes once the draft is
+                  longer than one screen defeats its own purpose. Copies the
+                  raw markdown source — what Save persists — not the render. */}
+              <div className="relative">
+                <div
+                  ref={previewRef}
+                  onScroll={() => syncScroll("preview")}
+                  className="h-[62vh] overflow-y-auto rounded-md border border-border bg-background p-3"
+                >
+                  <MarkdownView content={draft} />
+                </div>
+                <CopyButton
+                  text={draft}
+                  label="Copy markdown source"
+                  className="absolute right-1.5 top-1.5 z-10 bg-background/85 p-1 backdrop-blur-sm"
+                />
               </div>
             </div>
           ) : (
-            <div className="max-h-[70vh] overflow-y-auto pr-1">
-              <MarkdownView content={content} />
+            <div className="relative">
+              <div className="max-h-[70vh] overflow-y-auto pr-1">
+                <MarkdownView content={content} />
+              </div>
+              <CopyButton
+                text={content}
+                label="Copy document source"
+                className="absolute right-1.5 top-1.5 z-10 bg-background/85 p-1 backdrop-blur-sm"
+              />
             </div>
           )}
         </>
@@ -1073,14 +1113,24 @@ function SystemMessage({ reply, onOpenTask }: { reply: ControlReply; onOpenTask:
       <div
         onClick={clickable ? () => onOpenTask(reply.taskId as string) : undefined}
         title={clickable ? `Open ${reply.taskId} detail` : undefined}
-        className={`w-full max-w-[90%] space-y-2.5 rounded-[18px] border border-l-[3px] border-border bg-card px-3.5 py-3 ${accent} ${
+        className={`relative w-full max-w-[90%] space-y-2.5 rounded-[18px] border border-l-[3px] border-border bg-card px-3.5 py-3 ${accent} ${
           clickable ? "cursor-pointer transition-colors hover:border-primary/50" : ""
         }`}
       >
-        <div className="flex items-center gap-2">
+        {/* Copies the markdown SOURCE of the reply — the bubble is one
+            rendered region, so the affordance sits in its top-right corner;
+            stopPropagation (inside CopyButton) keeps the click from also
+            opening the task on clickable bubbles. */}
+        <CopyButton text={displayReply} label="Copy reply source" className="absolute right-2 top-2 z-10 p-1" />
+        <div className="flex items-center gap-2 pr-8">
           <Badge tone={tone === "warning" ? "warning" : tone === "success" ? "success" : "info"}>{reply.intent}</Badge>
           {reply.action ? <Badge tone="neutral">{reply.action}</Badge> : null}
-          {reply.taskId ? <code className="rounded bg-muted px-1.5 py-0.5 text-[11px]">{reply.taskId}</code> : null}
+          {reply.taskId ? (
+            <>
+              <code className="rounded bg-muted px-1.5 py-0.5 text-[11px]">{reply.taskId}</code>
+              <CopyButton text={reply.taskId} label={`Copy task ID ${reply.taskId}`} className="-translate-y-[0.12em] text-[11px]" />
+            </>
+          ) : null}
         </div>
         <MarkdownView content={displayReply} />
         {reply.registered && reply.registered.length > 0 ? (
@@ -1098,6 +1148,11 @@ function SystemMessage({ reply, onOpenTask }: { reply: ControlReply; onOpenTask:
                   className="flex w-full items-center gap-2 rounded-md border border-border px-2 py-1.5 text-left text-xs transition-colors hover:border-primary/50 hover:bg-accent"
                 >
                   <code className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px]">{task.localId}</code>
+                  {/* Copies the REAL task id, not the document-local T-code
+                      shown next to it: the id is what a /task command
+                      accepts, and the tooltip names exactly what gets
+                      copied. Span variant — the row itself is a <button>. */}
+                  <CopyButton as="span" text={task.id} label={`Copy task ID ${task.id}`} className="-translate-y-[0.12em] text-[10px]" />
                   <span className="min-w-0 flex-1 truncate">{task.title}</span>
                   <Badge tone={task.status === "QUEUED" ? "info" : "neutral"}>{task.status}</Badge>
                 </button>
@@ -1164,7 +1219,12 @@ function PlanTable({ steps, created }: { steps: PlanStep[]; created: boolean }) 
               <td className="px-2 py-1 text-muted-foreground">{step.workspaceMode}</td>
               {created ? (
                 <td className="px-2 py-1">
-                  <code className="text-[10px]">{step.taskId}</code>
+                  <span className="inline-flex items-center gap-1 whitespace-nowrap">
+                    <code className="text-[10px]">{step.taskId}</code>
+                    {step.taskId ? (
+                      <CopyButton text={step.taskId} label={`Copy task ID ${step.taskId}`} className="-translate-y-[0.12em] text-[10px]" />
+                    ) : null}
+                  </span>
                 </td>
               ) : null}
             </tr>

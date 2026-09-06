@@ -38,7 +38,7 @@ import {
   type TranscriptTurn,
   type WorkEvent,
 } from "@/lib/semanggi/client";
-import { Badge, Button, Card, Empty, Field, LoadError, Notice, Select, statusTone } from "./ui";
+import { Badge, Button, Card, CopyButton, Empty, Field, LoadError, Notice, Select, statusTone } from "./ui";
 
 const FINISHED_STATUSES = new Set(["COMPLETE", "CANCELLED"]);
 
@@ -167,6 +167,7 @@ export function TaskDialog({
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
               <code className="rounded bg-muted px-1.5 py-0.5 text-xs">{taskId}</code>
+              <CopyButton text={taskId} label={`Copy task ID ${taskId}`} className="-translate-y-[0.1em] text-xs" />
               {task ? <Badge tone={statusTone(task.status)}>{task.status}</Badge> : null}
               {task?.expedited ? <Badge tone="warning">expedited</Badge> : null}
               {task ? <Badge tone="neutral">{task.qualityClass}</Badge> : null}
@@ -617,7 +618,9 @@ function InfoTab({
           <div className="flex flex-wrap gap-2">
             {dependencies.map((d) => (
               <Badge key={d.id} tone={d.status === "COMPLETE" ? "success" : "neutral"}>
-                {d.id} · {d.status}
+                {d.id}
+                <CopyButton text={d.id} label={`Copy task ID ${d.id}`} className="mx-0.5 -translate-y-[0.1em] text-[10px]" />
+                · {d.status}
               </Badge>
             ))}
           </div>
@@ -977,7 +980,14 @@ function BlockList({ blocks, fallbackText, role }: { blocks: TranscriptBlock[] |
     // <final> wrapper; an operator's or tool's flattened text never does.
     const body = role === "assistant" ? stripFinal(fallbackText) : fallbackText;
     if (!body) return null;
-    if (role === "assistant") return <Markdownish text={body} />;
+    if (role === "assistant") {
+      return (
+        <div className="relative">
+          <CopyButton text={body} label="Copy response source" className="absolute right-0 top-0 z-10 bg-background/85 p-1 backdrop-blur-sm" />
+          <Markdownish text={body} />
+        </div>
+      );
+    }
     return <p className="whitespace-pre-wrap text-sm leading-relaxed">{body}</p>;
   }
   return (
@@ -1040,7 +1050,10 @@ function TranscriptBlockView({ block, role }: { block: TranscriptBlock; role?: s
     const body = stripFinal(block.text ?? "");
     if (!body) return null;
     return (
-      <div className="rounded-lg border border-border bg-card px-3 py-2">
+      // Copy takes the region's SOURCE text — the stripped answer, exactly
+      // what's rendered — not the wire text with its <final> wrapper.
+      <div className="relative rounded-lg border border-border bg-card px-3 py-2">
+        <CopyButton text={body} label="Copy response source" className="absolute right-1.5 top-1.5 z-10 bg-card/90 p-1 backdrop-blur-sm" />
         <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Response</div>
         <Markdownish text={body} />
       </div>
@@ -1224,7 +1237,7 @@ function ToolResultBody({ name, result }: { name: string; result: TranscriptBloc
   const text = typeof result.text === "string" ? result.text : "";
   if (!text) return null;
   return (
-    <div className={failed ? "rounded-md border border-red-500/50 bg-red-500/10 px-2.5 py-2" : ""}>
+    <div className={`relative ${failed ? "rounded-md border border-red-500/50 bg-red-500/10 px-2.5 py-2" : ""}`}>
       {name === "exec" ? (
         <pre
           className={`overflow-x-auto whitespace-pre-wrap rounded-md bg-zinc-900 px-2.5 py-2 font-mono text-[11px] leading-relaxed ${
@@ -1234,7 +1247,13 @@ function ToolResultBody({ name, result }: { name: string; result: TranscriptBloc
           {text}
         </pre>
       ) : (
-        <Markdownish text={text} className={failed ? "text-red-700 dark:text-red-300" : undefined} />
+        <>
+          {/* Markdown-rendered tool output (file reads, written content) —
+              the copy affordance belongs to the region, top-right inside it,
+              and copies the raw source the renderer received. */}
+          <CopyButton text={text} label="Copy output source" className="absolute right-1 top-1 z-10 bg-background/85 p-1 backdrop-blur-sm" />
+          <Markdownish text={text} className={failed ? "text-red-700 dark:text-red-300" : undefined} />
+        </>
       )}
     </div>
   );

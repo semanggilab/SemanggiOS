@@ -38,7 +38,7 @@ import {
   type ProjectSummary,
   type Task,
 } from "@/lib/semanggi/client";
-import { Badge, Button, Card, Empty, getProjectAccentRgb, LoadError, PageShell, Select, statusTone } from "./ui";
+import { Badge, Button, Card, CopyButton, Empty, getProjectAccentRgb, LoadError, PageShell, Select, statusTone } from "./ui";
 import { TaskDialog } from "./task-dialog";
 
 const REFRESH_MS = 15_000;
@@ -515,7 +515,13 @@ function TaskCard({ task, onOpen }: { task: Task; onOpen: (taskId: string) => vo
       className="w-full rounded-md border border-border bg-background px-2 py-2 text-left transition-colors hover:border-primary/50 hover:bg-accent"
     >
       <div className="flex items-center justify-between gap-2">
-        <code className="text-[10px] text-muted-foreground">{task.id}</code>
+        <span className="inline-flex min-w-0 items-center gap-1">
+          <code className="truncate text-[10px] text-muted-foreground">{task.id}</code>
+          {/* Span variant: the card itself is already a <button>, and a
+              button nested in a button is invalid HTML; stopPropagation
+              inside CopyButton keeps the copy from opening the task. */}
+          <CopyButton as="span" text={task.id} label={`Copy task ID ${task.id}`} className="-translate-y-[0.1em] text-[10px]" />
+        </span>
         {task.expedited ? <Badge tone="warning">expedited</Badge> : null}
       </div>
       <div className="mt-1 line-clamp-2 text-xs font-medium">{task.title}</div>
