@@ -613,34 +613,40 @@ function BrainFormModal({
   const [refreshingLevels, setRefreshingLevels] = useState(false);
   const [probeSamples, setProbeSamples] = useState<ThinkingProbeSample[] | null>(null);
 
-  // D64 rev.2: THREE sources, unioned — the gateway models cache (what the
-  // gateway actually serves), the brains that already exist (claude-code is
-  // an ACP harness and never appears in models.list), and every label the
-  // quota drivers answer to. The third one is the fix for the rigidity the
-  // operator hit: mistral models were registered in AgentOS while the cache
-  // still predated them, and a provider that HAS a driver must not wait for
-  // a cache refresh to become creatable. Driver labels absent from the cache
-  // are flagged in the hint — the brain's provider must equal the gateway's
-  // label or agent resolution will never match (the D42 lesson).
+  // D64 rev.3 (operator rule): the provider dropdown is the INTERSECTION of
+  // two sets — the potential set (providers of existing brains ∪ every
+  // providerKey the quota drivers answer to) and the LIVE gateway models
+  // list. Delete a provider's models from AgentOS and it disappears from
+  // the form, driver or not; that is the point. The persisted
+  // gateway_models cache is only the instant first paint: the panel asks
+  // the gateway for real on every open (relaxing D38's "don't ask every
+  // time" by operator instruction — a stale cache had mistral invisible
+  // after registration, and phantom after deletion). The one carve-out is
+  // the ACP harness label: claude-code is dispatchable but never appears
+  // in models.list, so the gate would hide a working provider.
+  const ACP_HARNESS_PROVIDERS = new Set(["claude-code"]);
+
   const providerOptions = useMemo(() => {
-    const set = new Set<string>();
-    for (const m of gatewayModels) if (m.provider) set.add(m.provider);
-    for (const b of brains) if (b.provider) set.add(b.provider);
-    for (const d of drivers) for (const key of d.providerKeys) set.add(key);
-    return Array.from(set).sort();
+    const live = new Set(gatewayModels.map((m) => m.provider).filter(Boolean));
+    const potential = new Set<string>();
+    for (const b of brains) if (b.provider) potential.add(b.provider);
+    for (const d of drivers) for (const key of d.providerKeys) potential.add(key);
+    return Array.from(potential)
+      .filter((p) => live.has(p) || ACP_HARNESS_PROVIDERS.has(p))
+      .sort();
   }, [gatewayModels, brains, drivers]);
 
   const modelOptions = useMemo(() => {
     const set = new Set<string>();
     const gatewayHasProvider = gatewayModels.some((m) => m.provider === draft.provider);
     if (gatewayHasProvider) {
+      // Same live list the provider gate used — model options can never be
+      // staler than provider options.
       for (const m of gatewayModels) if (m.provider === draft.provider) set.add(m.id);
     } else {
       // ACP harness providers (claude-code) never appear in models.list;
-      // their "models" are the ones the existing brains carry. For a label
-      // the cache has not seen yet, the list is empty ON PURPOSE — the field
-      // is free-typed (Combobox is an input+datalist) and the provider hint
-      // says to use the exact AgentOS label.
+      // their "models" are the ones the existing brains carry. Anything
+      // else here failed the gate above — the field stays free-typed.
       for (const b of brains) if (b.provider === draft.provider && b.model) set.add(b.model);
     }
     if (draft.model) set.add(draft.model);
@@ -1040,7 +1046,17 @@ export function SemanggiBrainsPanel() {
 
   useEffect(() => {
     semanggi.models().then((m) => setModels(m.models)).catch(() => setModels([]));
-    semanggi.gatewayModels().then((m) => setGatewayModels(m.models)).catch(() => setGatewayModels([]));
+    // Cache first so the dropdowns are never empty while the gateway
+    // answers, then the LIVE models.list — the provider gate (rev.3) reads
+    // what AgentOS serves RIGHT NOW, and the persisted cache self-heals as
+    // a side effect. If the gateway is unreachable the cached answer stays.
+    semanggi
+      .gatewayModels()
+      .then((m) => setGatewayModels(m.models))
+      .catch(() => setGatewayModels([]))
+      .then(() => semanggi.refreshGatewayModels())
+      .then((m) => setGatewayModels(m.models))
+      .catch(() => {});
     semanggi.quotaDrivers().then((r) => setDrivers(r.drivers)).catch(() => setDrivers([]));
     semanggi.thinkingLevels().then((r) => setThinkingLevels(r.levels)).catch(() => setThinkingLevels([]));
   }, []);
