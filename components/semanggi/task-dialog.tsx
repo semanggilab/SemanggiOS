@@ -1117,7 +1117,7 @@ function TranscriptBlockView({ block, role }: { block: TranscriptBlock; role?: s
  * exec" — reads unambiguously when both sit in one transcript; Read/Write
  * keep the bare verb.
  */
-const TOOL_VERB: Record<string, string> = { exec: "Call Exec", read: "Read", write: "Write" };
+const TOOL_VERB: Record<string, string> = { exec: "Call Exec", read: "Read", write: "Write", edit: "Edit" };
 
 /**
  * The shared collapsible shell for tool call and tool output regions: same
@@ -1157,8 +1157,13 @@ function ToolCallView({ block }: { block: TranscriptBlock }) {
   // Write content is the payload being written — the one argument worth
   // reading in full, multiline, rather than as a truncated key/value row.
   const content = typeof args.content === "string" ? args.content : null;
+  // The edit payload is a list of {oldText, newText} blocks (measured on the
+  // cluster wire) — it IS the change, so it renders as a diff instead of a
+  // JSON blob in the key/value rows. An unparseable payload stays in `rest`
+  // and is shown raw rather than dropped.
+  const edits = name === "edit" ? parseEdits(args.edits) : null;
   const rest = Object.entries(args).filter(
-    ([key]) => !["command", "path", "file_path", "content"].includes(key),
+    ([key]) => !["command", "path", "file_path", "content"].includes(key) && !(edits && key === "edits"),
   );
   const result = (block.result as TranscriptBlock | undefined) ?? undefined;
   const exit = typeof result?.exitCode === "number" ? result.exitCode : null;
@@ -1192,6 +1197,7 @@ function ToolCallView({ block }: { block: TranscriptBlock }) {
           {command}
         </pre>
       ) : null}
+      {edits ? <EditDiffView edits={edits} /> : null}
       {content ? (
         <pre className="overflow-x-auto whitespace-pre-wrap rounded-md border border-border bg-muted px-2.5 py-2 font-mono text-[11px] leading-relaxed">
           {content}
@@ -1219,6 +1225,189 @@ function ToolCallView({ block }: { block: TranscriptBlock }) {
         </>
       ) : null}
     </TranscriptRegion>
+  );
+}
+
+// --- Edit diffs --------------------------------------------------------------
+//
+// An `edit` call is the one tool action whose payload is a CHANGE rather than
+// content, and reading oldText/newText as a JSON blob makes the operator do
+// the diff in their head — exactly what the transcript exists to spare them.
+// So the payload renders as a line diff, computed here: the fork ships no
+// diff library and adding one is the rebase tax this component tree exists to
+// avoid (same reasoning as Markdownish below).
+
+type EditOp = { oldText: string; newText: string };
+
+/**
+ * The wire shape measured on the cluster: `arguments.edits` is an array of
+ * {oldText, newText} — possibly several per call, and the tool's own errors
+ * reference them as `edits[2]`, so the index is part of the vocabulary.
+ * Anything that does not match returns null, which leaves the payload in the
+ * raw key/value rows instead of silently dropping it.
+ */
+function parseEdits(raw: unknown): EditOp[] | null {
+  if (!Array.isArray(raw) || raw.length === 0) return null;
+  const edits: EditOp[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") return null;
+    const { oldText, newText } = item as Record<string, unknown>;
+    if (oldText === undefined && newText === undefined) return null;
+    if (oldText !== undefined && typeof oldText !== "string") return null;
+    if (newText !== undefined && typeof newText !== "string") return null;
+    edits.push({ oldText: oldText ?? "", newText: newText ?? "" });
+  }
+  return edits;
+}
+
+type DiffLine = { kind: "same" | "del" | "add"; text: string };
+type DiffRow = DiffLine | { gap: number };
+
+/**
+ * Line diff by longest-common-subsequence. The table is quadratic, so a
+ * pathological edit gets a ceiling instead of a hung browser tab; over it the
+ * caller falls back to showing before/after.
+ */
+function diffLines(oldText: string, newText: string): DiffLine[] | null {
+  const a = oldText.replace(/\r\n/g, "\n").split("\n");
+  const b = newText.replace(/\r\n/g, "\n").split("\n");
+  if (a.length * b.length > 2_000_000) return null;
+  const dp: number[][] = Array.from({ length: a.length + 1 }, () => new Array<number>(b.length + 1).fill(0));
+  for (let i = a.length - 1; i >= 0; i--) {
+    for (let j = b.length - 1; j >= 0; j--) {
+      dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    }
+  }
+  const out: DiffLine[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < a.length && j < b.length) {
+    if (a[i] === b[j]) {
+      out.push({ kind: "same", text: a[i] });
+      i += 1;
+      j += 1;
+    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+      out.push({ kind: "del", text: a[i] });
+      i += 1;
+    } else {
+      out.push({ kind: "add", text: b[j] });
+      j += 1;
+    }
+  }
+  while (i < a.length) out.push({ kind: "del", text: a[i++] });
+  while (j < b.length) out.push({ kind: "add", text: b[j++] });
+  return out;
+}
+
+/**
+ * Keeps `context` unchanged lines around each change and collapses longer
+ * unchanged runs into a single gap row — an edit touching three lines of a
+ * 400-line file must not render 400 lines to prove it.
+ */
+function compactDiff(lines: DiffLine[], context = 2): DiffRow[] {
+  const keep = new Array<boolean>(lines.length).fill(false);
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].kind === "same") continue;
+    for (let k = Math.max(0, i - context); k <= Math.min(lines.length - 1, i + context); k++) keep[k] = true;
+  }
+  const rows: DiffRow[] = [];
+  let gap = 0;
+  for (let i = 0; i < lines.length; i++) {
+    if (keep[i]) {
+      if (gap > 0) {
+        rows.push({ gap });
+        gap = 0;
+      }
+      rows.push(lines[i]);
+    } else {
+      gap += 1;
+    }
+  }
+  if (gap > 0) rows.push({ gap });
+  return rows;
+}
+
+const DIFF_ROW_CLASS: Record<DiffLine["kind"], string> = {
+  same: "",
+  del: "bg-red-500/10 text-red-800 dark:text-red-300",
+  add: "bg-emerald-500/10 text-emerald-800 dark:text-emerald-300",
+};
+
+const DIFF_PREFIX: Record<DiffLine["kind"], string> = { same: " ", del: "-", add: "+" };
+
+function EditDiffView({ edits }: { edits: EditOp[] }) {
+  return (
+    <div className="space-y-2">
+      {edits.map((edit, index) => (
+        <EditDiffBlock key={index} edit={edit} label={edits.length > 1 ? `edits[${index}]` : null} />
+      ))}
+    </div>
+  );
+}
+
+function EditDiffBlock({ edit, label }: { edit: EditOp; label: string | null }) {
+  if (edit.oldText === edit.newText) {
+    // Measured live: a brain does occasionally submit a no-op edit. Saying so
+    // beats rendering an all-context diff that shows nothing.
+    return (
+      <div className="rounded-md border border-border bg-muted px-2.5 py-2 text-[11px] text-muted-foreground">
+        {label ? <code className="mr-1.5 rounded bg-muted px-1 py-0.5">{label}</code> : null}
+        old and new text are identical — nothing changed
+      </div>
+    );
+  }
+  const lines = diffLines(edit.oldText, edit.newText);
+  if (!lines) {
+    // Over the LCS ceiling: the honest fallback is the two texts in full,
+    // one above the other.
+    return (
+      <div className="space-y-1.5">
+        {label ? <code className="rounded bg-muted px-1.5 py-0.5 text-[11px]">{label}</code> : null}
+        <div>
+          <div className="mb-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Before</div>
+          <pre className="overflow-x-auto whitespace-pre rounded-md border border-border bg-muted px-2.5 py-2 font-mono text-[11px] leading-relaxed">
+            {edit.oldText}
+          </pre>
+        </div>
+        <div>
+          <div className="mb-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">After</div>
+          <pre className="overflow-x-auto whitespace-pre rounded-md border border-border bg-muted px-2.5 py-2 font-mono text-[11px] leading-relaxed">
+            {edit.newText}
+          </pre>
+        </div>
+      </div>
+    );
+  }
+  const adds = lines.filter((l) => l.kind === "add").length;
+  const dels = lines.filter((l) => l.kind === "del").length;
+  return (
+    <div className="overflow-hidden rounded-md border border-border">
+      {label || adds || dels ? (
+        <div className="flex items-center gap-2 border-b border-border bg-muted/50 px-2.5 py-1 text-[10px] text-muted-foreground">
+          {label ? <code className="rounded bg-muted px-1 py-0.5">{label}</code> : null}
+          <span className="ml-auto">
+            <span className="text-emerald-700 dark:text-emerald-300">+{adds}</span>{" "}
+            <span className="text-red-700 dark:text-red-300">−{dels}</span>
+          </span>
+        </div>
+      ) : null}
+      <div className="overflow-x-auto bg-card font-mono text-[11px] leading-relaxed">
+        {compactDiff(lines).map((row, index) =>
+          "gap" in row ? (
+            <div key={index} className="bg-muted/40 px-2.5 py-0.5 text-center text-[10px] text-muted-foreground">
+              ⋯ {row.gap} unchanged {row.gap === 1 ? "line" : "lines"}
+            </div>
+          ) : (
+            <div key={index} className={`flex ${DIFF_ROW_CLASS[row.kind]}`}>
+              <span className="w-5 shrink-0 select-none text-center opacity-60">{DIFF_PREFIX[row.kind]}</span>
+              {/* A blank line still needs height, or consecutive empties read
+                  as one line. */}
+              <span className="whitespace-pre pr-2.5">{row.text || " "}</span>
+            </div>
+          ),
+        )}
+      </div>
+    </div>
   );
 }
 
