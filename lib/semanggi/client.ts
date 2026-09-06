@@ -284,6 +284,31 @@ export type ThinkingLevelEntry = {
   updatedAt: number;
 };
 
+/**
+ * One row of Settings → Model Map (D66): the JOIN of the resources table
+ * (operator policy + live availability signals) and the thinking_levels
+ * table (probe-measured facts). A side that has no row for this
+ * (provider, model) is null — visible, not hidden, because a missing
+ * resource row parks every routed task in WAIT_RESOURCE.
+ */
+export type ModelMapRow = {
+  provider: string;
+  model: string;
+  creditClass: string | null;
+  concurrencyLimit: number | null;
+  quotaPolicy: Record<string, unknown> | null;
+  windowKind: string | null;
+  availability: string | null;
+  nextAvailableAt: number | null;
+  lastQuotaSignal: string | null;
+  resourceUpdatedAt: number | null;
+  levels: string[] | null;
+  effortMode: EffortMode | null;
+  evidence: string | null;
+  levelsUpdatedAt: number | null;
+  sources: string[];
+};
+
 export type ThinkingProbeSample = {
   level: string;
   included: boolean;
@@ -436,6 +461,42 @@ export const semanggi = {
     call<{ approval: Approval }>("POST", `work/approvals/${approvalId}/decide`, { decision, note }),
 
   models: () => call<{ models: CatalogModel[] }>("GET", "work/models"),
+  // D66 Model Map: the resource+thinking-levels join, and its two write
+  // paths. Live fields (availability, nextAvailableAt) are read-only on the
+  // server; the PATCH body only carries policy fields.
+  modelMap: () => call<{ models: ModelMapRow[] }>("GET", "work/model-map"),
+  createResource: (body: {
+    provider: string;
+    model: string;
+    creditClass?: string;
+    concurrencyLimit?: number;
+    quotaPolicy?: Record<string, unknown> | null;
+    windowKind?: string | null;
+  }) => call<{ resource: { provider: string; model: string } }>("POST", "work/resources", body),
+  // Query params, not path segments: groq model ids contain "/" and a slash
+  // cannot survive the Next.js catch-all proxy path.
+  updateResourcePolicy: (
+    provider: string,
+    model: string,
+    patch: {
+      creditClass?: string;
+      concurrencyLimit?: number;
+      quotaPolicy?: Record<string, unknown> | null;
+      windowKind?: string | null;
+    },
+  ) =>
+    call<{ resource: { provider: string; model: string } }>(
+      "PATCH",
+      `work/resources?provider=${encodeURIComponent(provider)}&model=${encodeURIComponent(model)}`,
+      patch,
+    ),
+  putThinkingLevels: (entry: {
+    provider: string;
+    model: string;
+    levels: string[];
+    effortMode: EffortMode;
+    evidence?: string | null;
+  }) => call<{ level: ThinkingLevelEntry }>("PUT", "work/thinking-levels", entry),
   brains: () => call<{ brains: Brain[] }>("GET", "work/brains"),
   createBrain: (brain: Partial<Brain>) => call<{ brain: Brain }>("POST", "work/brains", brain),
   updateBrain: (id: string, patch: Partial<Brain>) => call<{ brain: Brain }>("PATCH", `work/brains/${id}`, patch),

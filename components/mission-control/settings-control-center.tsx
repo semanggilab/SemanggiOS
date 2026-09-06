@@ -5,7 +5,8 @@ import {
   SemanggiBrainsPanel,
   SemanggiBrainMapPanel,
   SemanggiRoleMapPanel,
-  SemanggiProjectsPanel
+  SemanggiProjectsPanel,
+  SemanggiModelMapPanel
 } from "@/components/semanggi/settings-panels";
 import {
   buildWorkspaceSelectionStorageKey,
@@ -29,6 +30,7 @@ import {
   KeyRound,
   Layers,
   FolderKanban,
+  Boxes,
   Share2,
   ListChecks,
   LoaderCircle,
@@ -149,6 +151,7 @@ type SettingsSectionId =
   | "semanggi-brains"
   | "semanggi-role-map"
   | "semanggi-brain-map"
+  | "semanggi-model-map"
   | "diagnostics"
   | "advanced"
   | "danger-zone";
@@ -174,6 +177,7 @@ const settingsSections: SettingsSection[] = [
   { id: "semanggi-role-map", label: "Role Level Map", icon: Users, group: "Semanggi" },
   { id: "semanggi-brains", label: "Brains", icon: Layers, group: "Semanggi" },
   { id: "semanggi-brain-map", label: "Role Brain Map", icon: Share2, group: "Semanggi" },
+  { id: "semanggi-model-map", label: "Model Map", icon: Boxes, group: "Semanggi" },
   { id: "diagnostics", label: "Diagnostics", icon: TerminalSquare, group: "System" },
   { id: "advanced", label: "Advanced", icon: Settings2, group: "System" },
   { id: "danger-zone", label: "Danger Zone", icon: AlertTriangle, group: "System", destructive: true }
@@ -194,6 +198,7 @@ const relatedSettingsSections: Record<SettingsSectionId, SettingsSectionId[]> = 
   "semanggi-brains": ["semanggi-role-map", "semanggi-brain-map", "models"],
   "semanggi-role-map": ["semanggi-brain-map", "semanggi-brains", "agents"],
   "semanggi-brain-map": ["semanggi-brains", "semanggi-role-map", "agents"],
+  "semanggi-model-map": ["semanggi-brains", "models"],
   diagnostics: ["gateway", "capabilities", "advanced"],
   advanced: ["diagnostics", "openclaw", "danger-zone"],
   "danger-zone": ["advanced", "diagnostics", "openclaw"]
@@ -2231,6 +2236,12 @@ export function SettingsControlCenter(
               {renderedActiveSection === "semanggi-role-map" ? (
               <section id="semanggi-role-map" className="scroll-mt-24">
                 <SemanggiRoleMapPanel />
+              </section>
+              ) : null}
+
+              {renderedActiveSection === "semanggi-model-map" ? (
+              <section id="semanggi-model-map" className="scroll-mt-24">
+                <SemanggiModelMapPanel />
               </section>
               ) : null}
 
@@ -6302,6 +6313,8 @@ function resolveHashSettingsSection(): SettingsSectionId {
       return "semanggi-brains";
     case "semanggi-role-map":
       return "semanggi-role-map";
+    case "semanggi-model-map":
+      return "semanggi-model-map";
     case "semanggi-brain-map":
       return "semanggi-brain-map";
     case "diagnostics":

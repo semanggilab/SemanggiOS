@@ -1,29 +1,34 @@
 "use client";
 
-// Four Semanggi settings panels: Project, Role Map, Brains, Brain Map.
+// Five Semanggi settings panels: Project, Role Map, Model Map, Brains, Brain Map.
 //
 // Each answers a different question, in order:
 //
 //   Project    "what template and profile does this project decompose with?"
 //   Role Map   "how expensive is each role allowed to think?"
+//   Model Map  "which models exist, and what is measured about them?"
 //   Brains     "which (model + effort) combinations do we have?"
 //   Brain Map  "at that level, which Brain for this role?"
 //
-// Project comes first because the other three only matter once a project
-// exists to apply them to. Brain Map can't be filled in before Brains exist,
-// and its level has no meaning before Role Map is set — so those two keep
-// their original relative order.
+// Project comes first because the other four only matter once a project
+// exists to apply them to. Model Map sits before Brains because a Brain is a
+// named view over a model row — the model (and its measured thinking facts)
+// logically precedes the combination. Brain Map can't be filled in before
+// Brains exist, and its level has no meaning before Role Map is set.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { MessageSquare } from "lucide-react";
 import {
   semanggi,
+  relativeTime,
   type Brain,
   type BrainMap,
   type BrainTestResult,
   type CatalogModel,
+  type EffortMode,
   type GatewayModel,
   type Level,
+  type ModelMapRow,
   type Profile,
   type ProjectRoleLevel,
   type QuotaDriverInfo,
@@ -1598,6 +1603,367 @@ export function SemanggiBrainMapPanel() {
           </div>
         </Card>
       ))}
+    </div>
+  );
+}
+
+// --- Model Map ----------------------------------------------------------------
+
+/**
+ * One row per (provider, model): the resources table (operator policy + live
+ * availability) joined with the thinking_levels table (probe-measured facts).
+ *
+ * This page REPLACES editing resources.json / thinking-levels.json by hand
+ * plus a restart (D66): both tables are written through the API, audited in
+ * event_log, and the JSON files remain first-boot seeds only. What it does
+ * not own: brains/routing (Brains + Brain Map pages) and the live fields
+ * (availability, next available) — those belong to the scheduler's quota
+ * signals and render read-only here.
+ */
+const AVAILABILITY_TONE: Record<string, "success" | "warning" | "danger" | "neutral"> = {
+  AVAILABLE: "success",
+  QUOTA_EXHAUSTED: "warning",
+  UNAVAILABLE: "danger",
+};
+
+type ModelMapDraft = {
+  provider: string;
+  model: string;
+  writeResource: boolean;
+  creditClass: string;
+  concurrencyLimit: string;
+  windowKind: string;
+  quotaPolicy: string;
+  writeThinking: boolean;
+  levels: string;
+  effortMode: EffortMode;
+  evidence: string;
+};
+
+const inputClass =
+  "h-8 w-full rounded-md border border-border bg-background px-2 text-xs outline-none focus:ring-1 focus:ring-ring disabled:opacity-50";
+
+function draftFromRow(row: ModelMapRow | null): ModelMapDraft {
+  return {
+    provider: row?.provider ?? "",
+    model: row?.model ?? "",
+    writeResource: row ? row.sources.includes("resource") : true,
+    creditClass: row?.creditClass ?? "metered",
+    concurrencyLimit: row?.concurrencyLimit != null ? String(row.concurrencyLimit) : "1",
+    windowKind: row?.windowKind ?? "",
+    quotaPolicy: row?.quotaPolicy && Object.keys(row.quotaPolicy).length > 0 ? JSON.stringify(row.quotaPolicy, null, 2) : "",
+    writeThinking: row ? row.sources.includes("thinking-levels") : false,
+    levels: row?.levels ? row.levels.join(", ") : "",
+    effortMode: row?.effortMode ?? "guaranteed",
+    evidence: row?.evidence ?? "",
+  };
+}
+
+function ModelMapModal({
+  row,
+  onClose,
+  onSaved,
+}: {
+  row: ModelMapRow | null;
+  onClose: () => void;
+  onSaved: () => Promise<void> | void;
+}) {
+  const create = row === null;
+  const [draft, setDraft] = useState<ModelMapDraft>(() => draftFromRow(row));
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const save = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      if (create && (!draft.provider.trim() || !draft.model.trim())) {
+        throw new Error("provider and model are required");
+      }
+
+      if (draft.writeResource) {
+        // An empty number input parses to 0, which would silently park every
+        // task on the model — that must be an explicit choice, not a typo.
+        const concurrency = Number(draft.concurrencyLimit);
+        if (draft.concurrencyLimit.trim() === "" || !Number.isInteger(concurrency) || concurrency < 0) {
+          throw new Error("concurrency limit must be an integer >= 0");
+        }
+        let quotaPolicy: Record<string, unknown> | null = null;
+        if (draft.quotaPolicy.trim()) {
+          try {
+            quotaPolicy = JSON.parse(draft.quotaPolicy) as Record<string, unknown>;
+          } catch {
+            throw new Error("quota policy is not valid JSON");
+          }
+        }
+        const body = {
+          creditClass: draft.creditClass,
+          concurrencyLimit: concurrency,
+          windowKind: draft.windowKind.trim() || null,
+          quotaPolicy,
+        };
+        if (create || !row!.sources.includes("resource")) {
+          await semanggi.createResource({ provider: draft.provider.trim(), model: draft.model.trim(), ...body });
+        } else {
+          await semanggi.updateResourcePolicy(draft.provider.trim(), draft.model.trim(), body);
+        }
+      }
+
+      if (draft.writeThinking) {
+        const levels = draft.levels
+          .split(",")
+          .map((l) => l.trim())
+          .filter(Boolean);
+        if (levels.length === 0) throw new Error("at least one thinking level is required");
+        await semanggi.putThinkingLevels({
+          provider: draft.provider.trim(),
+          model: draft.model.trim(),
+          levels,
+          effortMode: draft.effortMode,
+          evidence: draft.evidence.trim() || null,
+        });
+      }
+
+      await onSaved();
+      onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal
+      title={create ? "Add model" : `${draft.provider}/${draft.model}`}
+      subtitle="Resource policy (scheduling) and thinking facts (probe-measured) are written to separate tables — check a side to write it, uncheck to leave it alone."
+      onClose={onClose}
+      width="max-w-2xl"
+      actions={
+        <Button size="sm" disabled={saving} onClick={save}>
+          {saving ? "Saving…" : "Save"}
+        </Button>
+      }
+    >
+      <div className="space-y-4">
+        {error ? <Notice tone="danger">{error}</Notice> : null}
+
+        {create ? (
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field label="Provider">
+              <input value={draft.provider} onChange={(e) => setDraft({ ...draft, provider: e.target.value })} placeholder="zai" className={inputClass} />
+            </Field>
+            <Field label="Model">
+              <input value={draft.model} onChange={(e) => setDraft({ ...draft, model: e.target.value })} placeholder="glm-5.2" className={inputClass} />
+            </Field>
+          </div>
+        ) : null}
+
+        <div className="rounded-lg border border-border p-3">
+          <label className="flex items-center gap-2 text-xs font-medium">
+            <input
+              type="checkbox"
+              checked={draft.writeResource}
+              onChange={(e) => setDraft({ ...draft, writeResource: e.target.checked })}
+            />
+            Resource entry
+            {!create && !row!.sources.includes("resource") ? (
+              <Badge tone="warning">missing — tasks on this model park in WAIT_RESOURCE</Badge>
+            ) : null}
+          </label>
+          {draft.writeResource ? (
+            <div className="mt-3 grid gap-3 sm:grid-cols-3">
+              <Field label="Credit class">
+                <Select value={draft.creditClass} onChange={(v) => setDraft({ ...draft, creditClass: v })}>
+                  <option value="metered">metered</option>
+                  <option value="subscription">subscription</option>
+                </Select>
+              </Field>
+              <Field label="Concurrency limit" hint="0 parks every dispatch on this model.">
+                <input
+                  type="number"
+                  min={0}
+                  value={draft.concurrencyLimit}
+                  onChange={(e) => setDraft({ ...draft, concurrencyLimit: e.target.value })}
+                  className={inputClass}
+                />
+              </Field>
+              <Field label="Window kind" hint="e.g. five_hour (Claude plans); usually learned from live signals.">
+                <input value={draft.windowKind} onChange={(e) => setDraft({ ...draft, windowKind: e.target.value })} className={inputClass} />
+              </Field>
+              <Field label="Quota policy (JSON)" className="sm:col-span-3" hint="Optional. Only used by subscription classes, e.g. claude-code.">
+                <textarea
+                  value={draft.quotaPolicy}
+                  onChange={(e) => setDraft({ ...draft, quotaPolicy: e.target.value })}
+                  rows={4}
+                  placeholder="{ }"
+                  className="w-full rounded-md border border-border bg-background px-2 py-1 font-mono text-[11px] outline-none focus:ring-1 focus:ring-ring"
+                />
+              </Field>
+            </div>
+          ) : null}
+        </div>
+
+        <div className="rounded-lg border border-border p-3">
+          <label className="flex items-center gap-2 text-xs font-medium">
+            <input
+              type="checkbox"
+              checked={draft.writeThinking}
+              onChange={(e) => setDraft({ ...draft, writeThinking: e.target.checked })}
+            />
+            Thinking levels entry
+            {!create && !row!.sources.includes("thinking-levels") ? (
+              <Badge tone="warning">not measured — probe this model in the Brains form first</Badge>
+            ) : null}
+          </label>
+          {draft.writeThinking ? (
+            <div className="mt-3 space-y-3">
+              <Notice tone="info">
+                Levels are measured facts (D38), and a preference claim without evidence is rejected by the API. Prefer
+                the probe (Brains → probe levels); a manual edit here is for models a probe cannot run against.
+              </Notice>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Field label="Levels" hint="Comma-separated, e.g. off, low, high, max">
+                  <input value={draft.levels} onChange={(e) => setDraft({ ...draft, levels: e.target.value })} className={inputClass} />
+                </Field>
+                <Field label="Effort mode">
+                  <Select value={draft.effortMode} onChange={(v) => setDraft({ ...draft, effortMode: v as EffortMode })}>
+                    <option value="guaranteed">guaranteed — measured to change output</option>
+                    <option value="preference">preference — accepted but not applied</option>
+                  </Select>
+                </Field>
+              </div>
+              <Field label="Evidence" hint="What was measured, by whom, when. Required for preference mode.">
+                <textarea
+                  value={draft.evidence}
+                  onChange={(e) => setDraft({ ...draft, evidence: e.target.value })}
+                  rows={2}
+                  className="w-full rounded-md border border-border bg-background px-2 py-1 text-[11px] outline-none focus:ring-1 focus:ring-ring"
+                />
+              </Field>
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+export function SemanggiModelMapPanel() {
+  const { data, error, reload } = useAsync(() => semanggi.modelMap(), []);
+  const [modal, setModal] = useState<{ row: ModelMapRow | null } | null>(null);
+
+  const rows = data?.models ?? [];
+  const oneSided = rows.filter((r) => r.sources.length === 1);
+
+  return (
+    <div className="w-full space-y-4">
+      {error ? <LoadError error={error} onRetry={reload} /> : null}
+
+      <Notice tone="info">
+        One row per (provider, model): scheduling policy (resources) joined with probe-measured thinking facts.
+        Availability and next-available are live scheduler signals — read-only here. The JSON config files are
+        first-boot seeds; every edit on this page goes through the audited API instead.
+      </Notice>
+
+      {oneSided.length > 0 ? (
+        <Notice tone="warning">
+          {oneSided.length} row(s) exist on one side only:{" "}
+          {oneSided
+            .map((r) => `${r.provider}/${r.model} (${r.sources.includes("resource") ? "no thinking measurement" : "no resource entry"})`)
+            .join(", ")}
+          .
+        </Notice>
+      ) : null}
+
+      <Card
+        title="Models"
+        subtitle={`${rows.length} model(s)`}
+        actions={
+          <Button size="sm" onClick={() => setModal({ row: null })}>
+            Add model
+          </Button>
+        }
+      >
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="border-b text-left text-muted-foreground">
+                <th className="px-2 py-1 font-medium">Model</th>
+                <th className="px-2 py-1 font-medium">Credit</th>
+                <th className="px-2 py-1 font-medium">Conc.</th>
+                <th className="px-2 py-1 font-medium">Availability</th>
+                <th className="px-2 py-1 font-medium">Thinking levels</th>
+                <th className="px-2 py-1 font-medium">Evidence</th>
+                <th className="px-2 py-1" />
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row) => (
+                <tr key={`${row.provider}/${row.model}`} className="border-b border-border/50 align-top">
+                  <td className="px-2 py-1">
+                    <div className="font-medium">
+                      {row.provider}/{row.model}
+                    </div>
+                    {!row.sources.includes("resource") ? (
+                      <Badge tone="danger" title="No resources row: admission parks every task routed here in WAIT_RESOURCE.">
+                        no resource entry
+                      </Badge>
+                    ) : null}
+                    {!row.sources.includes("thinking-levels") ? (
+                      <Badge tone="warning" title="No probe measurement recorded for this model.">
+                        not measured
+                      </Badge>
+                    ) : null}
+                  </td>
+                  <td className="px-2 py-1">{row.creditClass ?? "—"}</td>
+                  <td className="px-2 py-1">{row.concurrencyLimit ?? "—"}</td>
+                  <td className="px-2 py-1">
+                    {row.availability ? (
+                      <Badge
+                        tone={AVAILABILITY_TONE[row.availability] ?? "neutral"}
+                        title={row.nextAvailableAt ? `until ${new Date(row.nextAvailableAt).toLocaleString()}` : undefined}
+                      >
+                        {row.availability === "QUOTA_EXHAUSTED" && row.nextAvailableAt
+                          ? `quota — ${relativeTime(row.nextAvailableAt)}`
+                          : row.availability}
+                      </Badge>
+                    ) : (
+                      "—"
+                    )}
+                  </td>
+                  <td className="px-2 py-1">
+                    {row.levels ? (
+                      <div className="flex flex-wrap items-center gap-1">
+                        {row.levels.map((l) => (
+                          <Badge key={l}>{l}</Badge>
+                        ))}
+                        {row.effortMode === "preference" ? (
+                          <Badge tone="warning" title={row.evidence ?? undefined}>
+                            preference
+                          </Badge>
+                        ) : null}
+                      </div>
+                    ) : (
+                      "—"
+                    )}
+                  </td>
+                  <td className="max-w-[16rem] truncate px-2 py-1 text-muted-foreground" title={row.evidence ?? undefined}>
+                    {row.evidence ?? "—"}
+                  </td>
+                  <td className="px-2 py-1 text-right">
+                    <Button size="sm" onClick={() => setModal({ row })}>
+                      Edit
+                    </Button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+
+      {modal ? <ModelMapModal row={modal.row} onClose={() => setModal(null)} onSaved={reload} /> : null}
     </div>
   );
 }

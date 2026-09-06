@@ -72,6 +72,13 @@ const ALLOWED: Array<{ method: string; pattern: RegExp }> = [
   { method: "PUT", pattern: /^work\/projects\/[A-Za-z0-9_-]+\/docs\/[a-z-]+$/ },
   { method: "GET", pattern: /^work\/gateway\/(models|thinking-levels)$/ },
   { method: "GET", pattern: /^work\/quota-drivers$/ },
+  // Model Map (D66): the join read plus its two write paths. PATCH identifies
+  // its row by query params — groq model ids contain "/" and a slash cannot
+  // survive this catch-all as a path segment.
+  { method: "GET", pattern: /^work\/model-map$/ },
+  { method: "POST", pattern: /^work\/resources$/ },
+  { method: "PATCH", pattern: /^work\/resources$/ },
+  { method: "PUT", pattern: /^work\/thinking-levels$/ },
   { method: "POST", pattern: /^work\/gateway\/models\/refresh$/ },
   { method: "POST", pattern: /^work\/gateway\/thinking-levels\/refresh$/ },
   { method: "POST", pattern: /^work\/gateway\/thinking-levels\/probe$/ },
