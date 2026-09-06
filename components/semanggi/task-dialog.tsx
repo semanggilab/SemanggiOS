@@ -1260,7 +1260,11 @@ function parseEdits(raw: unknown): EditOp[] | null {
   return edits;
 }
 
-type DiffLine = { kind: "same" | "del" | "add"; text: string };
+// oldNo/newNo number the line in ITS OWN text — the wire carries no file
+// position (measured: the call is only {path, edits:[{oldText,newText}]}, and
+// the tool matches oldText by content), so these are relative to the edit's
+// snippet, and the header says so.
+type DiffLine = { kind: "same" | "del" | "add"; text: string; oldNo: number | null; newNo: number | null };
 type DiffRow = DiffLine | { gap: number };
 
 /**
@@ -1283,20 +1287,53 @@ function diffLines(oldText: string, newText: string): DiffLine[] | null {
   let j = 0;
   while (i < a.length && j < b.length) {
     if (a[i] === b[j]) {
-      out.push({ kind: "same", text: a[i] });
+      out.push({ kind: "same", text: a[i], oldNo: i + 1, newNo: j + 1 });
       i += 1;
       j += 1;
     } else if (dp[i + 1][j] >= dp[i][j + 1]) {
-      out.push({ kind: "del", text: a[i] });
+      out.push({ kind: "del", text: a[i], oldNo: i + 1, newNo: null });
       i += 1;
     } else {
-      out.push({ kind: "add", text: b[j] });
+      out.push({ kind: "add", text: b[j], oldNo: null, newNo: j + 1 });
       j += 1;
     }
   }
-  while (i < a.length) out.push({ kind: "del", text: a[i++] });
-  while (j < b.length) out.push({ kind: "add", text: b[j++] });
+  while (i < a.length) {
+    out.push({ kind: "del", text: a[i], oldNo: i + 1, newNo: null });
+    i += 1;
+  }
+  while (j < b.length) {
+    out.push({ kind: "add", text: b[j], oldNo: null, newNo: j + 1 });
+    j += 1;
+  }
   return out;
+}
+
+/** First→last changed line on each side, e.g. `L3–5 → L3–6` for the header. */
+function diffLineSpan(lines: DiffLine[]): string {
+  let oldFirst: number | null = null;
+  let oldLast: number | null = null;
+  let newFirst: number | null = null;
+  let newLast: number | null = null;
+  for (const line of lines) {
+    if (line.kind === "del" && line.oldNo !== null) {
+      oldFirst = oldFirst ?? line.oldNo;
+      oldLast = line.oldNo;
+    }
+    if (line.kind === "add" && line.newNo !== null) {
+      newFirst = newFirst ?? line.newNo;
+      newLast = line.newNo;
+    }
+  }
+  const span = (first: number | null, last: number | null) =>
+    first === null || last === null ? null : first === last ? `L${first}` : `L${first}–${last}`;
+  const oldSpan = span(oldFirst, oldLast);
+  const newSpan = span(newFirst, newLast);
+  // A pure insertion or deletion has only one side; the sign says which.
+  if (oldSpan && newSpan) return `${oldSpan} → ${newSpan}`;
+  if (oldSpan) return `−${oldSpan}`;
+  if (newSpan) return `+${newSpan}`;
+  return "";
 }
 
 /**
@@ -1339,19 +1376,18 @@ function EditDiffView({ edits }: { edits: EditOp[] }) {
   return (
     <div className="space-y-2">
       {edits.map((edit, index) => (
-        <EditDiffBlock key={index} edit={edit} label={edits.length > 1 ? `edits[${index}]` : null} />
+        <EditDiffBlock key={index} edit={edit} />
       ))}
     </div>
   );
 }
 
-function EditDiffBlock({ edit, label }: { edit: EditOp; label: string | null }) {
+function EditDiffBlock({ edit }: { edit: EditOp }) {
   if (edit.oldText === edit.newText) {
     // Measured live: a brain does occasionally submit a no-op edit. Saying so
     // beats rendering an all-context diff that shows nothing.
     return (
       <div className="rounded-md border border-border bg-muted px-2.5 py-2 text-[11px] text-muted-foreground">
-        {label ? <code className="mr-1.5 rounded bg-muted px-1 py-0.5">{label}</code> : null}
         old and new text are identical — nothing changed
       </div>
     );
@@ -1362,7 +1398,6 @@ function EditDiffBlock({ edit, label }: { edit: EditOp; label: string | null }) 
     // one above the other.
     return (
       <div className="space-y-1.5">
-        {label ? <code className="rounded bg-muted px-1.5 py-0.5 text-[11px]">{label}</code> : null}
         <div>
           <div className="mb-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Before</div>
           <pre className="overflow-x-auto whitespace-pre rounded-md border border-border bg-muted px-2.5 py-2 font-mono text-[11px] leading-relaxed">
@@ -1382,15 +1417,21 @@ function EditDiffBlock({ edit, label }: { edit: EditOp; label: string | null }) 
   const dels = lines.filter((l) => l.kind === "del").length;
   return (
     <div className="overflow-hidden rounded-md border border-border">
-      {label || adds || dels ? (
-        <div className="flex items-center gap-2 border-b border-border bg-muted/50 px-2.5 py-1 text-[10px] text-muted-foreground">
-          {label ? <code className="rounded bg-muted px-1 py-0.5">{label}</code> : null}
-          <span className="ml-auto">
-            <span className="text-emerald-700 dark:text-emerald-300">+{adds}</span>{" "}
-            <span className="text-red-700 dark:text-red-300">−{dels}</span>
-          </span>
-        </div>
-      ) : null}
+      <div className="flex items-center gap-2 border-b border-border bg-muted/50 px-2.5 py-1 text-[10px] text-muted-foreground">
+        {/* The span an operator scans for — which lines this edit touched.
+            The wire carries no file position, so the numbers are relative to
+            the edit's own old/new text, and the tooltip says so. */}
+        <code
+          className="rounded bg-muted px-1 py-0.5"
+          title="Line numbers are relative to this edit's own old/new text — the gateway sends no file position."
+        >
+          {diffLineSpan(lines)}
+        </code>
+        <span className="ml-auto">
+          <span className="text-emerald-700 dark:text-emerald-300">+{adds}</span>{" "}
+          <span className="text-red-700 dark:text-red-300">−{dels}</span>
+        </span>
+      </div>
       <div className="overflow-x-auto bg-card font-mono text-[11px] leading-relaxed">
         {compactDiff(lines).map((row, index) =>
           "gap" in row ? (
@@ -1399,6 +1440,12 @@ function EditDiffBlock({ edit, label }: { edit: EditOp; label: string | null }) 
             </div>
           ) : (
             <div key={index} className={`flex ${DIFF_ROW_CLASS[row.kind]}`}>
+              <span className="w-8 shrink-0 select-none border-r border-border/40 px-1 text-right text-[10px] opacity-50">
+                {row.oldNo ?? ""}
+              </span>
+              <span className="w-8 shrink-0 select-none border-r border-border/40 px-1 text-right text-[10px] opacity-50">
+                {row.newNo ?? ""}
+              </span>
               <span className="w-5 shrink-0 select-none text-center opacity-60">{DIFF_PREFIX[row.kind]}</span>
               {/* A blank line still needs height, or consecutive empties read
                   as one line. */}
