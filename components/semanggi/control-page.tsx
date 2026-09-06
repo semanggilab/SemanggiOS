@@ -576,13 +576,13 @@ function DocModal({
   const [draft, setDraft] = useState("");
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
-  // memory/ docs (blueprint, decisions) are the agents' two-tier bootstrap
-  // territory (spec §9) — the controller refuses PUTs on them (D55), so the
-  // Edit button never appears for them either: `editable` is the UI's half
-  // of that lock, keyed off the server-reported dir rather than the doc's
-  // name, so the two halves can't drift. The reader stays for both dirs.
-  const [dir, setDir] = useState<string | null>(null);
-  const editable = dir === "docs";
+  // Every whitelisted document is editable from here, memory/ included
+  // (D58 reversed D55's read-only lock on blueprint/decisions): the agents
+  // only READ those files (spec §9's two-tier bootstrap), so the operator's
+  // edits are authoritative, and the controller's PUT accepts them. The
+  // controller remains the policy owner — if it ever refuses a name again,
+  // the save fails loudly into `saveError` rather than being pre-judged
+  // here.
 
   // Lockstep scrolling for the edit split. The sync is PROPORTIONAL — each
   // pane's scrollTop as a fraction of its own scrollable range — because the
@@ -634,7 +634,6 @@ function DocModal({
         if (cancelled) return;
         setExists(d.exists);
         setContent(d.content);
-        setDir(d.dir);
       })
       .catch((err) => {
         if (!cancelled) setError(err instanceof Error ? err.message : String(err));
@@ -671,8 +670,7 @@ function DocModal({
     <Modal
       title={`${name}.md — ${template}`}
       // Gated on a loaded, existing document: while the fetch is in flight
-      // (`content === null`) there is nothing to edit or save yet, and a
-      // memory/ doc (`editable === false`) is read-only on this surface.
+      // (`content === null`) there is nothing to edit or save yet.
       actions={
         content !== null && !error ? (
           editing ? (
@@ -696,11 +694,11 @@ function DocModal({
                 Cancel
               </Button>
             </>
-          ) : editable ? (
+          ) : (
             <Button size="sm" variant="outline" onClick={startEditing}>
               Edit
             </Button>
-          ) : null
+          )
         ) : null
       }
       onClose={onClose}
