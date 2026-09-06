@@ -1,5 +1,9 @@
 import type { CommandResult } from "@/lib/openclaw/cli";
 import type {
+  OpenClawNativeAuthorizationProof,
+  OpenClawOperatorIdentity
+} from "@/lib/openclaw/identity/types";
+import type {
   AgentMemorySearchConfig,
   AgentSandboxConfig,
   AgentToolPolicyConfig
@@ -9,6 +13,10 @@ export interface OpenClawCommandOptions {
   timeoutMs?: number;
   signal?: AbortSignal;
   forceCli?: boolean;
+  /** Server-created native handshake proof required for mutation CLI fallback. */
+  authorizationProof?: OpenClawNativeAuthorizationProof;
+  /** Dedicated local Gateway-auth bootstrap path; never accepted from HTTP input. */
+  allowGatewayAuthRepairFallback?: boolean;
 }
 
 export type OpenClawGatewayControlOptions = OpenClawCommandOptions & {
@@ -70,6 +78,19 @@ export type OpenClawGatewayClientDiagnostics = {
   lastNativeFailureAt: string | null;
   lastConnectedAt: string | null;
   lastDisconnectedAt: string | null;
+  operatorIdentity?: OpenClawOperatorIdentity;
+};
+
+export type OpenClawUserProfile = {
+  profileId: string;
+  displayName: string | null;
+  avatar: string | null;
+  email: string | null;
+  role: string | null;
+};
+
+export type OpenClawUserListPayload = {
+  profiles: OpenClawUserProfile[];
 };
 
 export type OpenClawGatewayRequestPolicy = {
@@ -192,10 +213,12 @@ export interface OpenClawAgentIdentityInput {
 export interface OpenClawAutomationProvisionInput {
   name: string;
   description?: string | null;
+  declarationKey?: string | null;
   agentId: string;
   message: string;
   thinking?: string | null;
   timeoutSeconds?: number | null;
+  sessionTarget?: "isolated" | "main" | "current" | `session:${string}`;
   schedule:
     | {
         kind: "every";
@@ -496,6 +519,9 @@ export interface OpenClawTaskListInput {
   status?: string;
   agentId?: string;
   workspace?: string;
+  /** Exact 8.1 `tasks.list` filter. */
+  sessionKey?: string;
+  /** @deprecated Use the exact Gateway `sessionKey` field. */
   sessionId?: string;
   limit?: number;
   cursor?: string | number | null;
@@ -521,6 +547,7 @@ export interface OpenClawTaskCancelInput {
 
 export type OpenClawTaskListPayload = Record<string, unknown> & {
   tasks?: unknown[];
+  nextCursor?: string | number | null;
   cursor?: string | number | null;
 };
 
@@ -949,16 +976,77 @@ export type OpenClawExecApprovalResolvePayload = Record<string, unknown> & {
 
 export type OpenClawCronStatusPayload = Record<string, unknown> & {
   enabled?: boolean;
+  triggersEnabled?: boolean;
+  storage?: string;
+  sqlitePath?: string | null;
   jobs?: number;
   nextWakeAtMs?: number | null;
 };
 
 export interface OpenClawCronListInput {
   includeDisabled?: boolean;
+  limit?: number;
+  offset?: number;
+  query?: string;
+  enabled?: boolean;
+  scheduleKind?: string;
+  lastRunStatus?: string;
+  trigger?: string;
+  sortBy?: string;
+  sortDir?: "asc" | "desc";
+  agentId?: string;
+  compact?: boolean;
+  includeDeliveryPreviews?: boolean;
 }
 
 export type OpenClawCronListPayload = Record<string, unknown> & {
   jobs?: unknown[];
+};
+
+export interface OpenClawCronGetInput {
+  id: string;
+}
+
+export type OpenClawCronRunMode = "due" | "force" | "if-enabled";
+
+export interface OpenClawCronRunInput {
+  id: string;
+  mode?: OpenClawCronRunMode;
+  expectedProcessInstanceId?: string;
+}
+
+export type OpenClawCronRunPayload = Record<string, unknown> & {
+  ok?: boolean;
+  ran?: boolean;
+  enqueued?: boolean;
+  runId?: string;
+  reason?: "disabled" | "not-due" | "already-running" | "invalid-spec" | "stopped" | string;
+  processInstanceId?: string;
+};
+
+export interface OpenClawCronRunsInput {
+  id?: string;
+  jobId?: string;
+  runId?: string;
+  scope?: "job" | "all";
+  agentId?: string;
+  limit?: number;
+  offset?: number;
+  statuses?: string[];
+  status?: string;
+  deliveryStatuses?: string[];
+  deliveryStatus?: string;
+  query?: string;
+  sortDir?: "asc" | "desc";
+}
+
+export type OpenClawCronRunsPayload = Record<string, unknown> & {
+  entries?: unknown[];
+  total?: number;
+  offset?: number;
+  limit?: number;
+  hasMore?: boolean;
+  nextOffset?: number | null;
 };
 
 export type OpenClawUpdateStatusPayload = Record<string, unknown> & {
@@ -988,10 +1076,19 @@ export type OpenClawUpdateStatusPayload = Record<string, unknown> & {
 };
 
 export interface OpenClawGatewayClient {
+  getDiagnostics?(): OpenClawGatewayClientDiagnostics;
+  getOperatorIdentity?(options?: OpenClawCommandOptions): Promise<OpenClawOperatorIdentity>;
   getHealth(options?: OpenClawCommandOptions): Promise<OpenClawHealthPayload>;
   getStatus(options?: OpenClawCommandOptions): Promise<StatusPayload>;
   getUpdateStatus(options?: OpenClawCommandOptions): Promise<OpenClawUpdateStatusPayload>;
   getGatewayStatus(options?: OpenClawCommandOptions): Promise<GatewayStatusPayload>;
+  listUsers?(options?: OpenClawCommandOptions): Promise<OpenClawUserListPayload>;
+  getCurrentUser?(options?: OpenClawCommandOptions): Promise<OpenClawUserProfile | null>;
+  setUserDisplayName?(profileId: string, displayName: string, options?: OpenClawCommandOptions): Promise<OpenClawUserProfile | null>;
+  setUserAvatar?(profileId: string, avatar: string | null, options?: OpenClawCommandOptions): Promise<OpenClawUserProfile | null>;
+  linkUserEmail?(profileId: string, email: string, options?: OpenClawCommandOptions): Promise<OpenClawUserProfile | null>;
+  setUserRole?(profileId: string, role: string | null, options?: OpenClawCommandOptions): Promise<OpenClawUserProfile | null>;
+  listGatewayRoleNames?(options?: OpenClawCommandOptions): Promise<string[]>;
   getModelStatus(options?: OpenClawCommandOptions): Promise<ModelsStatusPayload>;
   getAgentModelStatus(input: OpenClawAgentModelStatusInput, options?: OpenClawCommandOptions): Promise<ModelsStatusPayload>;
   setModelAuthOrder(input: OpenClawModelAuthOrderSetInput, options?: OpenClawCommandOptions): Promise<CommandResult>;
@@ -1118,6 +1215,9 @@ export interface OpenClawGatewayClient {
   ): Promise<OpenClawExecApprovalResolvePayload>;
   getCronStatus?(options?: OpenClawCommandOptions): Promise<OpenClawCronStatusPayload>;
   listCronJobs?(input?: OpenClawCronListInput, options?: OpenClawCommandOptions): Promise<OpenClawCronListPayload>;
+  getCronJob?(input: OpenClawCronGetInput, options?: OpenClawCommandOptions): Promise<Record<string, unknown>>;
+  runCronJob?(input: OpenClawCronRunInput, options?: OpenClawCommandOptions): Promise<OpenClawCronRunPayload>;
+  listCronRuns?(input?: OpenClawCronRunsInput, options?: OpenClawCommandOptions): Promise<OpenClawCronRunsPayload>;
   close?(reason?: string): Promise<void> | void;
   getDiagnostics?(): OpenClawGatewayClientDiagnostics;
 }

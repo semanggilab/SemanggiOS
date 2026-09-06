@@ -131,6 +131,11 @@ import type {
   OpenClawConfigSchemaLookupPayload,
   OpenClawCronListInput,
   OpenClawCronListPayload,
+  OpenClawCronGetInput,
+  OpenClawCronRunInput,
+  OpenClawCronRunPayload,
+  OpenClawCronRunsInput,
+  OpenClawCronRunsPayload,
   OpenClawCronStatusPayload,
   OpenClawDescribeSessionInput,
   OpenClawDeviceApproveInput,
@@ -184,8 +189,15 @@ import type {
   OpenClawToolsEffectivePayload,
   OpenClawUpdateAgentInput,
   OpenClawUpdateStatusPayload,
+  OpenClawUserListPayload,
+  OpenClawUserProfile,
   StatusPayload
 } from "@/lib/openclaw/client/types";
+import {
+  isVerifiedNativeAuthorizationProof,
+  resolveRequiredScopes
+} from "@/lib/openclaw/identity/authorization";
+import type { OpenClawOperatorIdentity } from "@/lib/openclaw/identity/types";
 
 export {
   isCliGatewayClientForcedByEnv,
@@ -269,6 +281,16 @@ export class NativeWsOpenClawGatewayClient implements OpenClawGatewayClient {
     this.connection.close(reason);
   }
 
+  async getOperatorIdentity(options: OpenClawCommandOptions = {}): Promise<OpenClawOperatorIdentity> {
+    try {
+      await this.probeNativeHandshake(options);
+    } catch {
+      return this.connection.getOperatorIdentity();
+    }
+
+    return this.connection.getOperatorIdentity();
+  }
+
   getDiagnostics(): OpenClawGatewayClientDiagnostics {
     const connection = this.connection.getDiagnostics();
     const forceCli = this.options.forceCli || isCliGatewayClientForcedByEnv();
@@ -317,7 +339,8 @@ export class NativeWsOpenClawGatewayClient implements OpenClawGatewayClient {
       lastNativeError: lastNativeError || null,
       lastNativeFailureAt: this.lastNativeFailure?.at ?? null,
       lastConnectedAt: connection.lastConnectedAt,
-      lastDisconnectedAt: connection.lastDisconnectedAt
+      lastDisconnectedAt: connection.lastDisconnectedAt,
+      operatorIdentity: this.connection.getOperatorIdentity()
     };
   }
 
@@ -395,6 +418,50 @@ export class NativeWsOpenClawGatewayClient implements OpenClawGatewayClient {
         this.recordGatewayFallback("status", error);
         return this.fallback.getStatus(options);
       });
+  }
+
+  async listUsers(options: OpenClawCommandOptions = {}): Promise<OpenClawUserListPayload> {
+    const payload = await this.callNative<unknown>("users.list", {}, options, { safety: "read" });
+    const profiles = isObjectRecord(payload) && Array.isArray(payload.profiles)
+      ? payload.profiles.map(normalizeOpenClawUserProfile).filter((profile): profile is OpenClawUserProfile => Boolean(profile))
+      : [];
+    return { profiles };
+  }
+
+  async getCurrentUser(options: OpenClawCommandOptions = {}): Promise<OpenClawUserProfile | null> {
+    const payload = await this.callNative<unknown>("users.self", {}, options, { safety: "read" });
+    return normalizeOpenClawUserProfile(payload);
+  }
+
+  async setUserDisplayName(profileId: string, displayName: string, options: OpenClawCommandOptions = {}) {
+    return this.callUserMutation("users.setDisplayName", { profileId, displayName }, options);
+  }
+
+  async setUserAvatar(profileId: string, avatar: string | null, options: OpenClawCommandOptions = {}) {
+    return this.callUserMutation("users.setAvatar", { profileId, avatar }, options);
+  }
+
+  async linkUserEmail(profileId: string, email: string, options: OpenClawCommandOptions = {}) {
+    return this.callUserMutation("users.linkEmail", { profileId, email }, options);
+  }
+
+  async setUserRole(profileId: string, role: string | null, options: OpenClawCommandOptions = {}) {
+    return this.callUserMutation("users.setRole", { profileId, role }, options);
+  }
+
+  async listGatewayRoleNames(options: OpenClawCommandOptions = {}) {
+    const payload = await this.callNative<unknown>("config.get", {}, options, { safety: "read" });
+    const record = isObjectRecord(payload) ? payload : {};
+    const config = isObjectRecord(record.config) ? record.config : record;
+    const gateway = isObjectRecord(config.gateway) ? config.gateway : {};
+    const roles = isObjectRecord(gateway.roles) ? gateway.roles : {};
+    const definitions = isObjectRecord(roles.definitions) ? roles.definitions : {};
+    return Object.keys(definitions).sort();
+  }
+
+  private async callUserMutation(method: string, params: Record<string, unknown>, options: OpenClawCommandOptions) {
+    const payload = await this.callNative<unknown>(method, params, options, { safety: "mutation" });
+    return normalizeOpenClawUserProfile(payload);
   }
 
   getUpdateStatus(options: OpenClawCommandOptions = {}) {
@@ -660,9 +727,13 @@ export class NativeWsOpenClawGatewayClient implements OpenClawGatewayClient {
   }
 
   listTasks(input: OpenClawTaskListInput = {}, options: OpenClawCommandOptions = {}) {
+    const { sessionId, ...taskListInput } = input;
     return this.gatewayFirst<OpenClawTaskListPayload>(
       "tasks.list",
-      { ...input },
+      {
+        ...taskListInput,
+        sessionKey: taskListInput.sessionKey ?? sessionId
+      },
       options,
       (payload) => parseObjectGatewayPayload<OpenClawTaskListPayload>("tasks.list", payload),
       () => this.fallback.listTasks(input, options)
@@ -680,15 +751,16 @@ export class NativeWsOpenClawGatewayClient implements OpenClawGatewayClient {
   }
 
   assignTask(input: OpenClawTaskAssignInput, options: OpenClawCommandOptions = {}) {
-    return this.gatewayFirstCompatible<OpenClawTaskPayload>(
-      "taskAssign",
-      {
-        ...input,
-        reason: input.reason ?? undefined
-      },
-      options,
-      (payload) => parseObjectGatewayPayload<OpenClawTaskPayload>("tasks.assign", payload),
-      () => this.fallback.assignTask(input, options)
+    void input;
+    void options;
+    // OpenClaw 2026.8.1 exposes tasks.list/get/cancel, but not tasks.assign.
+    // Keep the compatibility surface for callers while preventing an invented
+    // RPC or CLI fallback from mutating runtime state.
+    return Promise.reject<OpenClawTaskPayload>(
+      new OpenClawGatewayClientError(
+        "OpenClaw 2026.8.1 does not expose task assignment through Gateway or CLI.",
+        "unsupported"
+      )
     );
   }
 
@@ -1183,6 +1255,9 @@ export class NativeWsOpenClawGatewayClient implements OpenClawGatewayClient {
     options: OpenClawCommandOptions = {}
   ) {
     if (this.options.forceCli || isCliGatewayClientForcedByEnv()) {
+      if (resolveGatewayRequestPolicy(method, options).safety === "mutation") {
+        this.assertVerifiedCliMutationFallback(method, params, options);
+      }
       return this.fallback.call<TPayload>(method, params, options);
     }
 
@@ -1196,6 +1271,9 @@ export class NativeWsOpenClawGatewayClient implements OpenClawGatewayClient {
       const policy = resolveGatewayRequestPolicy(method, options);
       if (!shouldUseCliFallback(error, method, policy)) {
         throw this.cliFallbackDisabledError(method, error);
+      }
+      if (policy.safety === "mutation") {
+        this.assertVerifiedCliMutationFallback(method, params, options);
       }
       this.recordGatewayFallback(method, error);
       return this.fallback.call<TPayload>(method, params, options);
@@ -1274,6 +1352,7 @@ export class NativeWsOpenClawGatewayClient implements OpenClawGatewayClient {
     // under the default agent store. AgentOS needs the explicit workspace-local
     // agentDir, so creation must use the official CLI path until Gateway exposes it.
     if (input.agentDir?.trim()) {
+      this.assertVerifiedCliMutationFallback("agents.create", { agentDir: input.agentDir }, options);
       return this.fallback.addAgent(input, options);
     }
 
@@ -1366,6 +1445,9 @@ export class NativeWsOpenClawGatewayClient implements OpenClawGatewayClient {
 
   async runAgentTurn(input: OpenClawAgentTurnInput, options: OpenClawCommandOptions = {}) {
     if (this.options.forceCli || isCliGatewayClientForcedByEnv()) {
+      this.assertVerifiedCliMutationFallback("chat.send", {
+        sessionKey: buildAgentSessionKey(input.agentId, input.sessionId)
+      }, options);
       return this.fallback.runAgentTurn(input, options);
     }
 
@@ -1383,9 +1465,13 @@ export class NativeWsOpenClawGatewayClient implements OpenClawGatewayClient {
     } catch (error) {
       this.options.onNativeFailure?.(error, "chat.send");
       const method = error instanceof NativeGatewayRequestError ? error.method : "chat.send";
-      if (!shouldUseCliFallback(error, method, { safety: "mutation" })) {
+      const policy = resolveGatewayRequestPolicy(method, options);
+      if (!shouldUseCliFallback(error, method, policy)) {
         throw this.cliFallbackDisabledError(method, error);
       }
+      this.assertVerifiedCliMutationFallback(method, {
+        sessionKey: buildAgentSessionKey(input.agentId, input.sessionId)
+      }, options);
       this.recordGatewayFallback("chat.send", error);
       return this.fallback.runAgentTurn(input, options);
     }
@@ -1472,6 +1558,9 @@ export class NativeWsOpenClawGatewayClient implements OpenClawGatewayClient {
     options: OpenClawCommandOptions = {}
   ) {
     if (options.forceCli || this.options.forceCli || isCliGatewayClientForcedByEnv()) {
+      this.assertVerifiedCliMutationFallback("chat.send", {
+        sessionKey: buildAgentSessionKey(input.agentId, input.sessionId)
+      }, options);
       return this.fallback.streamAgentTurn(input, callbacks, options);
     }
 
@@ -1535,6 +1624,9 @@ export class NativeWsOpenClawGatewayClient implements OpenClawGatewayClient {
       if (!shouldUseCliFallback(error, method, { safety: "mutation" })) {
         throw this.cliFallbackDisabledError(method, error);
       }
+      this.assertVerifiedCliMutationFallback(method, {
+        sessionKey: buildAgentSessionKey(input.agentId, input.sessionId)
+      }, options);
       this.recordGatewayFallback("streamAgentTurn", error);
       return this.fallback.streamAgentTurn(input, callbacks, options);
     } finally {
@@ -1745,6 +1837,44 @@ export class NativeWsOpenClawGatewayClient implements OpenClawGatewayClient {
     );
   }
 
+  getCronJob(input: OpenClawCronGetInput, options: OpenClawCommandOptions = {}) {
+    return this.gatewayFirst<Record<string, unknown>>(
+      "cron.get",
+      { id: input.id },
+      options,
+      (payload) => isObjectRecord(payload) ? payload : {},
+      () => this.fallback.getCronJob?.(input, options) ?? this.fallback.call<Record<string, unknown>>("cron.get", { id: input.id }, options)
+    );
+  }
+
+  runCronJob(input: OpenClawCronRunInput, options: OpenClawCommandOptions = {}) {
+    return this.gatewayFirst<OpenClawCronRunPayload>(
+      "cron.run",
+      {
+        id: input.id,
+        mode: input.mode,
+        expectedProcessInstanceId: input.expectedProcessInstanceId
+      },
+      options,
+      (payload) => isObjectRecord(payload) ? payload as OpenClawCronRunPayload : {},
+      () => this.fallback.runCronJob?.(input, options) ?? this.fallback.call<OpenClawCronRunPayload>("cron.run", {
+        id: input.id,
+        mode: input.mode,
+        expectedProcessInstanceId: input.expectedProcessInstanceId
+      }, options)
+    );
+  }
+
+  listCronRuns(input: OpenClawCronRunsInput = {}, options: OpenClawCommandOptions = {}) {
+    return this.gatewayFirst<OpenClawCronRunsPayload>(
+      "cron.runs",
+      { ...input },
+      options,
+      (payload) => isObjectRecord(payload) ? payload as OpenClawCronRunsPayload : {},
+      () => this.fallback.listCronRuns?.(input, options) ?? this.fallback.call<OpenClawCronRunsPayload>("cron.runs", { ...input }, options)
+    );
+  }
+
   async subscribeRuntimeEvents(
     input: OpenClawRuntimeEventSubscriptionInput,
     callbacks: OpenClawGatewayEventCallbacks,
@@ -1827,6 +1957,9 @@ export class NativeWsOpenClawGatewayClient implements OpenClawGatewayClient {
           `${operation.label} requires native OpenClaw Gateway support; CLI fallback is disabled for this operation.`,
           "unsupported"
         );
+      }
+      if (safety === "mutation") {
+        this.assertVerifiedCliMutationFallback(method, params, options);
       }
       return this.fallback.call<TPayload>(method, params, options);
     }
@@ -1964,6 +2097,9 @@ export class NativeWsOpenClawGatewayClient implements OpenClawGatewayClient {
     policy: OpenClawGatewayRequestPolicy = resolveGatewayRequestPolicy(method, options)
   ) {
     if (this.options.forceCli || isCliGatewayClientForcedByEnv()) {
+      if (policy.safety === "mutation") {
+        this.assertVerifiedCliMutationFallback(method, params, options);
+      }
       return fallback();
     }
 
@@ -1976,6 +2112,9 @@ export class NativeWsOpenClawGatewayClient implements OpenClawGatewayClient {
       this.options.onNativeFailure?.(error, method);
       if (!shouldUseCliFallback(error, method, policy)) {
         throw this.cliFallbackDisabledError(method, error);
+      }
+      if (policy.safety === "mutation") {
+        this.assertVerifiedCliMutationFallback(method, params, options);
       }
       this.recordGatewayFallback(method, error);
       return fallback();
@@ -1990,6 +2129,7 @@ export class NativeWsOpenClawGatewayClient implements OpenClawGatewayClient {
     fallback: () => Promise<TPayload>
   ) {
     const operation = getOpenClawGatewayCompatibilityOperation(operationId);
+    const methods = getOpenClawGatewayMethodCandidates(operationId);
 
     if (this.options.forceCli || isCliGatewayClientForcedByEnv()) {
       if (operation.fallbackAllowed === false) {
@@ -1999,10 +2139,14 @@ export class NativeWsOpenClawGatewayClient implements OpenClawGatewayClient {
         );
       }
 
+      const fallbackMethod = methods[0] ?? operationId;
+      if (resolveGatewayRequestPolicy(fallbackMethod, options).safety === "mutation") {
+        this.assertVerifiedCliMutationFallback(fallbackMethod, params, options);
+      }
+
       return fallback();
     }
 
-    const methods = getOpenClawGatewayMethodCandidates(operationId);
     let lastUnsupportedError: unknown = null;
 
     for (const method of methods) {
@@ -2030,6 +2174,9 @@ export class NativeWsOpenClawGatewayClient implements OpenClawGatewayClient {
         if (!shouldUseCliFallback(error, method, policy)) {
           throw this.cliFallbackDisabledError(method, error);
         }
+        if (policy.safety === "mutation") {
+          this.assertVerifiedCliMutationFallback(method, params, options);
+        }
 
         this.recordGatewayFallback(method, error);
         return fallback();
@@ -2047,6 +2194,9 @@ export class NativeWsOpenClawGatewayClient implements OpenClawGatewayClient {
       );
     }
 
+    if (resolveGatewayRequestPolicy(fallbackOperation, options).safety === "mutation") {
+      this.assertVerifiedCliMutationFallback(fallbackOperation, params, options);
+    }
     this.recordGatewayFallback(
       fallbackOperation,
       lastUnsupportedError ?? new NativeGatewayError(
@@ -2066,6 +2216,7 @@ export class NativeWsOpenClawGatewayClient implements OpenClawGatewayClient {
     fallback: () => Promise<CommandResult>
   ) {
     if (this.options.forceCli || isCliGatewayClientForcedByEnv()) {
+      this.assertVerifiedCliMutationFallback(operation, { path }, options);
       return fallback();
     }
 
@@ -2229,6 +2380,9 @@ export class NativeWsOpenClawGatewayClient implements OpenClawGatewayClient {
       if (!fallbackAllowed) {
         throw this.cliFallbackDisabledError(failedMethod, error);
       }
+      if (!options.allowGatewayAuthRepairFallback) {
+        this.assertVerifiedCliMutationFallback(failedMethod, { path }, options);
+      }
       this.recordGatewayFallback(operation, error);
       return fallback();
     } finally {
@@ -2236,6 +2390,23 @@ export class NativeWsOpenClawGatewayClient implements OpenClawGatewayClient {
         this.close(`${operation}:${path}`);
       }
     }
+  }
+
+  private assertVerifiedCliMutationFallback(
+    method: string,
+    params: Record<string, unknown>,
+    options: OpenClawCommandOptions
+  ) {
+    const currentIdentity = this.connection.getOperatorIdentity();
+    if (isVerifiedNativeAuthorizationProof(options.authorizationProof, currentIdentity, method, params)) {
+      return;
+    }
+
+    const requiredScopes = resolveRequiredScopes(method, params);
+    throw new OpenClawGatewayClientError(
+      `CLI fallback for OpenClaw mutation ${method} requires a current native Gateway authorization proof for ${requiredScopes.join(", ")}.`,
+      "auth"
+    );
   }
 }
 
@@ -2480,4 +2651,19 @@ function collectUpdateStatusRecords(payload: OpenClawUpdateStatusPayload | undef
 
 function readRecord(value: unknown) {
   return isObjectRecord(value) ? value : undefined;
+}
+
+function normalizeOpenClawUserProfile(value: unknown): OpenClawUserProfile | null {
+  const record = isObjectRecord(value) ? value : null;
+  const profile = record && isObjectRecord(record.profile) ? record.profile : record;
+  if (!profile) return null;
+  const profileId = readNonEmptyString(profile.profileId ?? profile.id);
+  if (!profileId) return null;
+  return {
+    profileId,
+    displayName: typeof profile.displayName === "string" ? profile.displayName : null,
+    avatar: typeof profile.avatar === "string" ? profile.avatar : null,
+    email: typeof profile.email === "string" ? profile.email : null,
+    role: typeof profile.role === "string" ? profile.role : null
+  };
 }

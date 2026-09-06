@@ -34,8 +34,8 @@ const staleBaselineCopyPattern = new RegExp([
 ].join("|"));
 
 test("setup smoke uses the centralized OpenClaw baseline constants", () => {
-  assert.equal(OPENCLAW_RECOMMENDED_VERSION, "2026.6.11");
-  assert.equal(OPENCLAW_SUPPORTED_BASELINE_VERSION, "2026.6.8");
+  assert.equal(OPENCLAW_RECOMMENDED_VERSION, "2026.8.1");
+  assert.equal(OPENCLAW_SUPPORTED_BASELINE_VERSION, "2026.8.1");
   assert.equal(compareVersionStrings(OPENCLAW_RECOMMENDED_VERSION, OPENCLAW_SUPPORTED_BASELINE_VERSION) >= 0, true);
   assert.match(OPENCLAW_RECOMMENDED_VERSION, /^\d{4}\.\d+\.\d+$/);
   assert.equal(OPENCLAW_GATEWAY_BASELINE_VERSION, OPENCLAW_SUPPORTED_BASELINE_VERSION);
@@ -119,17 +119,19 @@ test("set default model smoke stays Gateway-native before explicit recovery fall
   assert.match(stateService, /AGENTOS_OPENCLAW_LEGACY_PROVIDER_FILE_FALLBACK/);
 });
 
-test("agent create and dispatch smoke keep Gateway-first calls with visible CLI fallback", () => {
+test("agent create and dispatch smoke keeps unsupported task assignment fail-closed", () => {
   const nativeClient = source("lib/openclaw/client/native-ws-gateway-client.ts");
   const cliClient = source("lib/openclaw/client/cli-gateway-client.ts");
 
   assert.match(nativeClient, /gatewayFirst\(\s*"agents\.create"/);
-  assert.match(nativeClient, /gatewayFirstCompatible<OpenClawTaskPayload>\(\s*"taskAssign"/);
+  assert.doesNotMatch(nativeClient, /gatewayFirstCompatible<OpenClawTaskPayload>\(\s*"taskAssign"/);
+  assert.match(nativeClient, /does not expose task assignment through Gateway or CLI/);
   assert.match(nativeClient, /callNative<MissionCommandPayload>\(\s*"chat\.send"/);
   assert.match(nativeClient, /callNative<MissionCommandPayload>\(\s*"sessions\.send"/);
   assert.match(nativeClient, /agentDir[\s\S]*official CLI path until Gateway exposes it/);
   assert.match(cliClient, /"agents",\s*"add"/);
   assert.match(cliClient, /"agent",\s*"--agent"/);
+  assert.match(cliClient, /does not expose task assignment through Gateway or CLI/);
 });
 
 test("CLI fallback visibility smoke rejects outdated baseline assumptions", () => {

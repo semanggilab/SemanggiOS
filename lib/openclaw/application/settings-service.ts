@@ -31,8 +31,11 @@ import {
   NativeWsOpenClawGatewayClient
 } from "@/lib/openclaw/client/native-ws-gateway-client";
 import { resetOpenClawGatewayClient } from "@/lib/openclaw/client/gateway-client-factory";
+import { getOpenClawLifecycleService } from "@/lib/openclaw/lifecycle/service";
 import { isOpenClawInvalidConfigError } from "@/lib/openclaw/command-failure";
+import { OPENCLAW_OPERATOR_SCOPES } from "@/lib/openclaw/identity/contract";
 import type { OpenClawDeviceApprovePayload } from "@/lib/openclaw/client/gateway-client";
+import type { OpenClawCommandOptions } from "@/lib/openclaw/client/types";
 import type {
   GatewayAuthSecretState,
   GatewayNativeAuthCredentialKind,
@@ -64,7 +67,9 @@ const GATEWAY_DEVICE_ACCESS_REQUIRED_SCOPES = [
   "operator.read",
   "operator.write",
   "operator.approvals",
+  "operator.questions",
   "operator.pairing",
+  "operator.talk",
   "operator.talk.secrets"
 ];
 
@@ -88,9 +93,10 @@ export async function getGatewayBindMode(
 
 type GatewayNativeDeviceAccessRepairOptions = {
   nativeProbe?: () => Promise<unknown>;
-  approveLatest?: (requiredScopes: string[]) => Promise<unknown>;
+  approveLatest?: (requiredScopes: string[], options?: OpenClawCommandOptions) => Promise<unknown>;
   readDeviceAuthToken?: () => Promise<GatewayDeviceAuthToken | null>;
   requiredScopes?: string[];
+  gatewayOptions?: OpenClawCommandOptions;
 };
 
 type GatewayDeviceAuthToken = {
@@ -132,13 +138,16 @@ function invalidateSettingsSnapshot() {
   clearMissionControlRuntimeHistoryCache();
 }
 
-export async function updateGatewayRemoteUrl(input: { gatewayUrl?: string | null }) {
+export async function updateGatewayRemoteUrl(
+  input: { gatewayUrl?: string | null },
+  options: OpenClawCommandOptions = {}
+) {
   const gatewayUrl = normalizeGatewayRemoteUrl(input.gatewayUrl);
 
   if (gatewayUrl) {
-    await getOpenClawAdapter().setConfig(GATEWAY_REMOTE_URL_CONFIG_KEY, gatewayUrl);
+    await getOpenClawAdapter().setConfig(GATEWAY_REMOTE_URL_CONFIG_KEY, gatewayUrl, options);
   } else if (await getOpenClawAdapter().hasConfig(GATEWAY_REMOTE_URL_CONFIG_KEY)) {
-    await getOpenClawAdapter().unsetConfig(GATEWAY_REMOTE_URL_CONFIG_KEY);
+    await getOpenClawAdapter().unsetConfig(GATEWAY_REMOTE_URL_CONFIG_KEY, options);
   }
 
   invalidateSettingsSnapshot();
@@ -505,10 +514,7 @@ export async function generateGatewayNativeAuthToken(input: {
 
 async function restartGatewayAfterAuthTokenRotation() {
   try {
-    await getOpenClawAdapter().controlGateway("restart", {
-      timeoutMs: 20_000,
-      force: true
-    });
+    await getOpenClawLifecycleService().restart();
     resetOpenClawGatewayClient("gateway auth token rotated");
     await delay(GATEWAY_AUTH_RESTART_SETTLE_MS);
 
@@ -528,18 +534,14 @@ async function cycleGatewayAfterAuthTokenRotation() {
   let issue: string | null = null;
 
   try {
-    await getOpenClawAdapter().controlGateway("stop", {
-      timeoutMs: 20_000
-    });
+    await getOpenClawLifecycleService().stop();
     await delay(750);
   } catch (error) {
     issue = redactErrorMessage(error, "Gateway stop after token rotation failed.");
   }
 
   try {
-    await getOpenClawAdapter().controlGateway("start", {
-      timeoutMs: 20_000
-    });
+    await getOpenClawLifecycleService().start();
     resetOpenClawGatewayClient("gateway auth token rotation stop/start completed");
     await delay(GATEWAY_AUTH_RESTART_SETTLE_MS);
 
@@ -622,7 +624,7 @@ export async function repairGatewayNativeDeviceAccess(
   };
 
   try {
-    const payload = await (options.approveLatest ?? approveLatestOpenClawDeviceAccess)(requiredScopes);
+    const payload = await (options.approveLatest ?? approveLatestOpenClawDeviceAccess)(requiredScopes, options.gatewayOptions);
     result = normalizeGatewayDeviceApprovePayload(payload);
     deviceToken = await syncLocalOpenClawDeviceAuthTokenFromPairing() ?? await readDeviceAuthToken();
   } catch (error) {
@@ -699,10 +701,13 @@ export async function repairGatewayNativeDeviceAccess(
   };
 }
 
-async function approveLatestOpenClawDeviceAccess(requiredScopes: string[]) {
+async function approveLatestOpenClawDeviceAccess(
+  requiredScopes: string[],
+  gatewayOptions: OpenClawCommandOptions = {}
+) {
   return getOpenClawAdapter().approveDeviceAccess(
     { latest: true, scopes: requiredScopes },
-    { timeoutMs: GATEWAY_DEVICE_ACCESS_REPAIR_TIMEOUT_MS }
+    { ...gatewayOptions, timeoutMs: GATEWAY_DEVICE_ACCESS_REPAIR_TIMEOUT_MS }
   );
 }
 
@@ -1152,7 +1157,9 @@ function resolveOpenClawStateDir() {
 }
 
 function normalizeGatewayRepairScopes(scopes: string[] | undefined) {
-  const normalized = readStringArray(scopes).filter((scope) => /^operator\./.test(scope));
+  const normalized = readStringArray(scopes).filter((scope) =>
+    (OPENCLAW_OPERATOR_SCOPES as readonly string[]).includes(scope)
+  );
   return normalized.length > 0 ? Array.from(new Set(normalized)).sort() : GATEWAY_DEVICE_ACCESS_REQUIRED_SCOPES;
 }
 

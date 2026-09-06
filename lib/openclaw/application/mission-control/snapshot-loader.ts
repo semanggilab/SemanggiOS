@@ -457,6 +457,7 @@ async function loadMissionControlSnapshots({
       agentConfig,
       agentsList,
       runtimeSnapshot: resolvedRuntimeSnapshot.value,
+      taskList: resolvedTaskList.value,
       systemProfile,
       dispatchRecords,
       resolveWorkspaceId: workspaceBindings.resolveWorkspaceId,

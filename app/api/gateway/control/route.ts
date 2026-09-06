@@ -2,9 +2,9 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { getMissionControlSnapshot } from "@/lib/agentos/control-plane";
-import { resolveAgentOsDeploymentCapabilities } from "@/lib/agentos/deployment-capabilities";
 import { controlGateway } from "@/lib/openclaw/application/gateway-service";
-import { restartManagedRailwayGateway } from "@/lib/openclaw/application/managed-gateway-service";
+import { requireAgentOsProductPermission } from "@/lib/security/agentos-product-authorization";
+import { recordAgentOsAuditEvent } from "@/lib/security/agentos-audit";
 import { redactErrorMessage, redactSecrets } from "@/lib/security/redaction";
 
 export const runtime = "nodejs";
@@ -22,26 +22,11 @@ const actionMessageMap = {
 } satisfies Record<z.infer<typeof gatewayControlSchema>["action"], string>;
 
 export async function POST(request: Request) {
+  const authorization = await requireAgentOsProductPermission(request, "lifecycle.manage");
+  if ("response" in authorization) return authorization.response;
+
   try {
     const input = gatewayControlSchema.parse(await request.json());
-    const deployment = resolveAgentOsDeploymentCapabilities();
-
-    if (deployment.gatewayLifecycle === "supervisor-managed") {
-      if (input.action !== "restart") {
-        return NextResponse.json(
-          { error: "Railway manages the Gateway process lifecycle. Only a managed Gateway restart is available." },
-          { status: 409 }
-        );
-      }
-
-      const result = await restartManagedRailwayGateway();
-      const snapshot = await getMissionControlSnapshot({ force: true });
-      return NextResponse.json({
-        message: result.message,
-        snapshot: redactSecrets(snapshot)
-      });
-    }
-
     const currentSnapshot = await getMissionControlSnapshot({ force: true });
 
     if (!currentSnapshot.diagnostics.installed) {
@@ -54,6 +39,12 @@ export async function POST(request: Request) {
     }
 
     await controlGateway(input.action);
+    await recordAgentOsAuditEvent({
+      actor: authorization.actor,
+      operation: `gateway.${input.action}`,
+      targetKind: "gateway",
+      result: "succeeded"
+    }).catch(() => {});
     const snapshot = await getMissionControlSnapshot({ force: true });
 
     return NextResponse.json({
@@ -61,6 +52,12 @@ export async function POST(request: Request) {
       snapshot: redactSecrets(snapshot)
     });
   } catch (error) {
+    await recordAgentOsAuditEvent({
+      actor: authorization.actor,
+      operation: "gateway.control",
+      targetKind: "gateway",
+      result: "failed"
+    }).catch(() => {});
     return NextResponse.json(
       {
         error: redactErrorMessage(error, "Unable to control the OpenClaw gateway.")

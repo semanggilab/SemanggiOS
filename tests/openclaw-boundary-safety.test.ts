@@ -301,7 +301,7 @@ test("read-only agent config and channel discovery use the OpenClaw adapter", ()
   );
   const channelsSource = readFileSync(path.join(rootDir, "lib/openclaw/domains/channels.ts"), "utf8");
 
-  assert.match(agentConfigSource, /getOpenClawAdapter\(\)\.getConfig<MutableAgentConfigEntry\[\]>\("agents\.list"\)/);
+  assert.match(agentConfigSource, /getOpenClawAdapter\(\)\.getConfig<MutableAgentConfigEntry\[\]>\("agents\.list", options\)/);
   assert.match(channelsSource, /getOpenClawAdapter\(\)\.getConfig<TelegramAllowlistConfig>\("channels\.telegram\.groups"\)/);
   assert.match(channelsSource, /getOpenClawAdapter\(\)\.getConfig<DiscordGuildConfig>\("channels\.discord\.guilds"\)/);
   assert.match(channelsSource, /getOpenClawAdapter\(\)\.getChannelLogs/);
@@ -314,7 +314,7 @@ test("agent config writes stay behind the OpenClaw adapter without workspace ide
 
   assert.doesNotMatch(source, /from\s+["']@\/lib\/openclaw\/cli["']/);
   assert.doesNotMatch(source, /runOpenClaw/);
-  assert.match(source, /getOpenClawAdapter\(\)\.setConfig\("agents\.list", configList, \{ strictJson: true \}\)/);
+  assert.match(source, /getOpenClawAdapter\(\)\.setConfig\("agents\.list", configList, \{ \.\.\.options, strictJson: true \}\)/);
   assert.doesNotMatch(source, /getOpenClawAdapter\(\)\.setAgentIdentity/);
   assert.match(source, /writeFile\(identityFilePath, identityMarkdown, "utf8"\)/);
 });
@@ -640,7 +640,7 @@ test("workspace creation provides a compact mobile-first basic flow", () => {
     "utf8"
   );
 
-  assert.match(source, /contentClassName="h-\[100dvh\] max-h-\[100dvh\] w-screen rounded-none/);
+  assert.match(source, /contentClassName="[^"]*h-\[100dvh\][^"]*max-h-\[100dvh\][^"]*w-screen[^"]*rounded-none/);
   assert.match(source, /<MobileWorkspaceCreateForm/);
   assert.match(source, /id="mobile-workspace-name"/);
   assert.match(source, /id="mobile-workspace-goal"/);
@@ -653,7 +653,7 @@ test("workspace creation provides a compact mobile-first basic flow", () => {
 
 test("mission shell supports hover and pinned sidebar modes", () => {
   const source = readFileSync(path.join(rootDir, "components/mission-control/mission-control-shell.tsx"), "utf8");
-  const mobileSettingsHeaderStart = source.indexOf('"fixed inset-x-0 top-0 z-[60] flex min-h-16');
+  const mobileSettingsHeaderStart = source.indexOf('"fixed inset-x-0 top-0 z-');
   const mobileSettingsHeaderEnd = source.indexOf('"pointer-events-auto fixed inset-y-0 left-0 z-50', mobileSettingsHeaderStart);
 
   assert.match(source, /const \[isSidebarOpenState, setIsSidebarOpen\] = useState\(false\);/);
@@ -678,7 +678,10 @@ test("mission shell supports hover and pinned sidebar modes", () => {
     /onBlurCapture=\{\(event\) => \{\s*if \(isSidebarPinned \|\| shouldKeepSidebarOpenForPortal\(event\.relatedTarget\)\) \{\s*return;\s*\}\s*if \(!event\.currentTarget\.contains\(event\.relatedTarget as Node \| null\)\) \{\s*setIsSidebarOpen\(false\);/
   );
   assert.match(source, /sidebarPinned=\{isSidebarPinned\}[\s\S]*?onToggleCollapsed=\{handleSidebarPinToggle\}/);
-  assert.match(source, /aria-label=\{isSidebarOpen \? "Close navigation" : "Open navigation"\}/);
+  assert.match(source, /aria-label="Close navigation"/);
+  assert.match(source, /aria-label="Open navigation"/);
+  assert.match(source, /onClick=\{\(\) => setIsSidebarOpen\(true\)\}/);
+  assert.match(source, /onClick=\{\(\) => setIsSidebarOpen\(false\)\}/);
   assert.match(source, /isSidebarOpen \? "translate-x-0" : "-translate-x-full"/);
   assert.match(source, /aria-label=\{isInspectorOpen \? "Close inspector" : "Open inspector"\}/);
   assert.equal(source.match(/<MissionControlCanvasTitlePill surfaceTheme=\{surfaceTheme\} \/>/g)?.length, 1);
@@ -781,7 +784,7 @@ test("settings control center renders a single hash-selected section", () => {
   assert.match(source, /type SettingsSectionId =[\s\S]*?"danger-zone";/);
   assert.match(source, /const \[activeSection, setActiveSection\] = useState<SettingsSectionId>\(\(\) => resolveInitialSettingsSection\(\)\)/);
   assert.match(source, /window\.addEventListener\("hashchange", syncActiveSectionFromHash\)/);
-  assert.match(source, /\{ id: "general", label: "General", icon: Wrench \}/);
+  assert.match(source, /\{ id: "general", label: "General", icon: Wrench, group: "Core" \}/);
   assert.match(source, /case "general":\s*case "tools":\s*return "general"/);
 });
 
@@ -931,7 +934,7 @@ test("system setup starts Gateway before requesting a full readiness snapshot", 
 
   assert.equal(statusIndex >= 0 && startIndex > statusIndex, true);
   assert.equal(snapshotIndex === -1 || snapshotIndex > startIndex, true);
-  assert.match(source, /async function startGatewayForOnboarding[\s\S]*?runCommand\(openClawBin, \["gateway", "start", "--json"\]/);
+  assert.match(source, /async function startGatewayForOnboarding[\s\S]*?getOpenClawLifecycleService\(\)\.start\(\)/);
   assert.match(source, /const gatewayStatusTimeoutMs = 3_000;/);
 });
 
@@ -964,7 +967,7 @@ test("system setup restarts a stopped Gateway service before readiness polling",
   const source = readFileSync(path.join(rootDir, "app/api/onboarding/route.ts"), "utf8");
   const postStartIndex = source.indexOf("const postStartGatewayStatus = await readGatewayStatus(openClawBin)");
   const stoppedCheckIndex = source.indexOf("isGatewayServiceStopped(gatewayStatus)", postStartIndex);
-  const restartIndex = source.indexOf('["gateway", "restart", "--force", "--json"]', stoppedCheckIndex);
+  const restartIndex = source.indexOf("restartGatewayForOnboarding", stoppedCheckIndex);
   const waitIndex = source.indexOf("snapshot = await waitForReadySnapshotWithGatewayAuthDetection", restartIndex);
 
   assert.equal(postStartIndex >= 0 && stoppedCheckIndex > postStartIndex, true);
@@ -989,13 +992,12 @@ test("readiness polling does not load full snapshots before Gateway is reachable
   assert.doesNotMatch(source, /exceeded 60 seconds/);
 });
 
-test("Windows setup starts a registered Gateway task before falling back to the OpenClaw CLI", () => {
+test("Windows setup uses the canonical lifecycle service instead of a task-specific Gateway owner", () => {
   const source = readFileSync(path.join(rootDir, "app/api/onboarding/route.ts"), "utf8");
-  const directStart = source.indexOf("await startRegisteredWindowsGateway(send)");
-  const cliStart = source.indexOf('await runCommand(openClawBin, ["gateway", "start", "--json"]', directStart);
+  const lifecycleStart = source.indexOf("getOpenClawLifecycleService().start()", source.indexOf("async function startGatewayForOnboarding"));
 
-  assert.equal(directStart >= 0 && cliStart > directStart, true);
-  assert.match(source, /runCommand\(executable, \["\/Run", "\/TN", taskName\]/);
+  assert.equal(lifecycleStart >= 0, true);
+  assert.doesNotMatch(source, /startRegisteredWindowsGateway/);
 });
 
 test("system setup action shows a loader until lightweight status resolves", () => {

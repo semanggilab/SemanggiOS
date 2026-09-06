@@ -8,6 +8,7 @@ import {
 } from "@/lib/openclaw/cli";
 import { stringifyCommandFailure } from "@/lib/openclaw/command-failure";
 import { containsRedactedOpenClawSecret } from "@/lib/openclaw/client/native-ws-gateway-utils";
+import { OpenClawGatewayClientError } from "@/lib/openclaw/client/native-ws-gateway-errors";
 import { OPENCLAW_GATEWAY_PROTOCOL_RANGE } from "@/lib/openclaw/client/native-ws-gateway-types";
 import { OPENCLAW_SUPPORTED_BASELINE_VERSION } from "@/lib/openclaw/versions";
 import type {
@@ -47,6 +48,11 @@ import type {
   OpenClawConfigSchemaLookupPayload,
   OpenClawCronListInput,
   OpenClawCronListPayload,
+  OpenClawCronGetInput,
+  OpenClawCronRunInput,
+  OpenClawCronRunPayload,
+  OpenClawCronRunsInput,
+  OpenClawCronRunsPayload,
   OpenClawCronStatusPayload,
   OpenClawDescribeSessionInput,
   OpenClawDeviceApproveInput,
@@ -100,6 +106,7 @@ import type {
   OpenClawUpdateStatusPayload,
   StatusPayload
 } from "@/lib/openclaw/client/types";
+import type { OpenClawOperatorIdentity } from "@/lib/openclaw/identity/types";
 
 function buildAgentTurnArgs(input: OpenClawAgentTurnInput) {
   const args = [
@@ -343,6 +350,20 @@ function isObjectRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export class CliOpenClawGatewayClient implements OpenClawGatewayClient {
+  async getOperatorIdentity(): Promise<OpenClawOperatorIdentity> {
+    return {
+      requestedRole: null,
+      role: null,
+      requestedScopes: [],
+      grantedScopes: [],
+      grantedScopesKnown: false,
+      deviceId: null,
+      connectionId: null,
+      authenticated: false,
+      source: "cli-fallback"
+    };
+  }
+
   getDiagnostics(): OpenClawGatewayClientDiagnostics {
     return {
       mode: "cli",
@@ -358,7 +379,18 @@ export class CliOpenClawGatewayClient implements OpenClawGatewayClient {
       lastNativeError: null,
       lastNativeFailureAt: null,
       lastConnectedAt: null,
-      lastDisconnectedAt: null
+      lastDisconnectedAt: null,
+      operatorIdentity: {
+        requestedRole: null,
+        role: null,
+        requestedScopes: [],
+        grantedScopes: [],
+        grantedScopesKnown: false,
+        deviceId: null,
+        connectionId: null,
+        authenticated: false,
+        source: "cli-fallback"
+      }
     };
   }
 
@@ -493,7 +525,14 @@ export class CliOpenClawGatewayClient implements OpenClawGatewayClient {
   }
 
   assignTask(input: OpenClawTaskAssignInput, options: OpenClawCommandOptions = {}) {
-    return this.call<OpenClawTaskPayload>("tasks.assign", { ...input, reason: input.reason ?? undefined }, options);
+    void input;
+    void options;
+    return Promise.reject<OpenClawTaskPayload>(
+      new OpenClawGatewayClientError(
+        "OpenClaw 2026.8.1 does not expose task assignment through Gateway or CLI.",
+        "unsupported"
+      )
+    );
   }
 
   cancelTask(input: OpenClawTaskCancelInput, options: OpenClawCommandOptions = {}) {
@@ -1021,6 +1060,22 @@ export class CliOpenClawGatewayClient implements OpenClawGatewayClient {
 
   listCronJobs(input: OpenClawCronListInput = {}, options: OpenClawCommandOptions = {}) {
     return this.call<OpenClawCronListPayload>("cron.list", { ...input }, options);
+  }
+
+  getCronJob(input: OpenClawCronGetInput, options: OpenClawCommandOptions = {}) {
+    return this.call<Record<string, unknown>>("cron.get", { id: input.id }, options);
+  }
+
+  runCronJob(input: OpenClawCronRunInput, options: OpenClawCommandOptions = {}) {
+    return this.call<OpenClawCronRunPayload>("cron.run", {
+      id: input.id,
+      mode: input.mode,
+      expectedProcessInstanceId: input.expectedProcessInstanceId
+    }, options);
+  }
+
+  listCronRuns(input: OpenClawCronRunsInput = {}, options: OpenClawCommandOptions = {}) {
+    return this.call<OpenClawCronRunsPayload>("cron.runs", { ...input }, options);
   }
 }
 

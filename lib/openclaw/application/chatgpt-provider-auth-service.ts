@@ -8,6 +8,7 @@ import {
 } from "@/lib/openclaw/install";
 import { resolveOpenClawBin, runOpenClaw } from "@/lib/openclaw/cli";
 import { readOpenClawCodexPluginReady } from "@/lib/openclaw/application/model-provider-state-service";
+import { getOpenClawLifecycleService } from "@/lib/openclaw/lifecycle/service";
 
 const chatGptAuthTimeoutMs = 6 * 60_000;
 const pluginSetupTimeoutMs = 2 * 60_000;
@@ -31,6 +32,10 @@ const defaultDependencies: ChatGptProviderAuthDependencies = {
   platform: process.platform,
   readPluginReady: async () => await readOpenClawCodexPluginReady(),
   runSetupCommand: async (args, timeoutMs) => {
+    if (args[0] === "gateway" && args[1] === "restart") {
+      await getOpenClawLifecycleService().restart();
+      return;
+    }
     await runOpenClaw(args, { timeoutMs });
   },
   runInteractiveLogin: runOpenClawChatGptInteractiveLogin
@@ -38,8 +43,9 @@ const defaultDependencies: ChatGptProviderAuthDependencies = {
 
 /**
  * Runs OpenClaw's official provider-auth flow without handing a shell command to
- * the operator. OpenClaw 2026.6.11 does not expose OAuth start through Gateway,
- * so this remains an explicit, isolated CLI fallback at the application boundary.
+ * the operator. The current OpenClaw Gateway contract does not expose OAuth
+ * start through Gateway, so this remains an explicit, isolated CLI fallback at
+ * the application boundary.
  */
 export async function connectOpenClawChatGptProvider(
   input: {

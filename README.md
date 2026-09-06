@@ -142,7 +142,7 @@ AgentOS is being built for that layer: the place where a person can turn individ
 
 [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/new/template/agentos-1?utm_medium=integration&utm_source=button&utm_campaign=agentos)
 
-AgentOS includes a production-oriented Railway deployment path that runs AgentOS and the pinned OpenClaw Gateway in the public application service and runs interactive Chromium in a separate private `browser-worker` service. The deployment provisions one persistent `/data` volume for AgentOS/OpenClaw state and a second dedicated `/data` volume for Chromium profiles, keeps the Gateway on container loopback, initializes Instance Protection from the username and password supplied during deployment, and waits for the private worker and Gateway before passing Railway's healthcheck. The Railway supervisor owns the Gateway process lifecycle; AgentOS configures and observes OpenClaw through its native Gateway and can request a supervisor-managed Gateway restart without opening a host terminal.
+AgentOS includes a production-oriented Railway deployment path that runs AgentOS and the pinned OpenClaw Gateway in the public application service and runs interactive Chromium in a separate private `browser-worker` service. The deployment provisions one persistent `/data` volume for AgentOS/OpenClaw state and a second dedicated `/data` volume for Chromium profiles, keeps the Gateway on container loopback, initializes Instance Protection from the username and password supplied during deployment, and waits for the private worker and Gateway before passing Railway's healthcheck. The Railway external supervisor owns the Gateway process lifecycle; AgentOS configures and observes OpenClaw through its native Gateway and can request a supervised Gateway restart through the lifecycle API without opening a host terminal.
 
 The official published Railway template provisions both required volumes, generates the internal AgentOS, OpenClaw, and browser-worker secrets automatically, and wires the private worker URL through Railway private networking. The only required operator input is the initial administrator password. See [`docs/deploy-on-railway.md`](docs/deploy-on-railway.md) for the complete runtime, private-networking, and template update model.
 
@@ -181,13 +181,13 @@ Install a specific published version:
 macOS or Linux:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SapienXai/AgentOS/main/install.sh | AGENTOS_VERSION=0.7.6 bash
+curl -fsSL https://raw.githubusercontent.com/SapienXai/AgentOS/main/install.sh | AGENTOS_VERSION=0.7.7 bash
 ```
 
 Windows PowerShell:
 
 ```powershell
-$env:AGENTOS_VERSION='0.7.6'; iwr https://raw.githubusercontent.com/SapienXai/AgentOS/main/install.ps1 | iex
+$env:AGENTOS_VERSION='0.7.7'; iwr https://raw.githubusercontent.com/SapienXai/AgentOS/main/install.ps1 | iex
 ```
 
 ### Start AgentOS
@@ -325,10 +325,10 @@ Several operations spawn local processes, inspect transcript files, or write to 
 
 ## Compatibility
 
-The current `0.7.6` package expects OpenClaw 2026.6.8 or newer:
+The current `0.7.7` package uses OpenClaw `2026.8.1` as its supported baseline:
 
 - Node.js 24 or newer;
-- OpenClaw `2026.6.8` or newer;
+- OpenClaw 2026.8.1 or newer;
 - a reachable Gateway with valid local authentication;
 - at least one ready model for real mission execution.
 
@@ -427,8 +427,8 @@ For a real local release rehearsal, follow [`docs/agentos-clean-install-smoke-ch
 ```bash
 pnpm check:release
 pnpm smoke:agentos-package
-git tag agentos-v0.7.6
-git push origin agentos-v0.7.6
+git tag agentos-v0.7.7
+git push origin agentos-v0.7.7
 ```
 
 The release workflow builds and smoke-tests packages for:

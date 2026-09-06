@@ -1,6 +1,7 @@
 import "server-only";
 
 import { getOpenClawAdapter } from "@/lib/openclaw/adapter/openclaw-adapter";
+import { getOpenClawLifecycleService } from "@/lib/openclaw/lifecycle/service";
 import {
   isPluginApiVersionMismatch,
   resolveChannelPluginActivation
@@ -9,6 +10,12 @@ import { resolveOpenClawVersion, runOpenClaw, runOpenClawJson } from "@/lib/open
 import type { OpenClawChannelStatusPayload } from "@/lib/openclaw/client/types";
 import { OPENCLAW_RECOMMENDED_VERSION, OPENCLAW_SUPPORTED_BASELINE_VERSION } from "@/lib/openclaw/versions";
 import { redactErrorMessage } from "@/lib/security/redaction";
+import { getOpenClawGatewayClient } from "@/lib/openclaw/client/gateway-client-factory";
+import {
+  isVerifiedNativeAuthorizationProof,
+  resolveRequiredScopes
+} from "@/lib/openclaw/identity/authorization";
+import type { OpenClawCommandOptions } from "@/lib/openclaw/client/types";
 
 export const CHANNEL_CONNECT_PROVIDERS = [
   "whatsapp",
@@ -215,7 +222,10 @@ export async function getChannelConnectOverview(): Promise<ChannelConnectOvervie
   };
 }
 
-export async function installChannelPlugin(provider: ChannelConnectProviderId) {
+export async function installChannelPlugin(
+  provider: ChannelConnectProviderId,
+  options: OpenClawCommandOptions = {}
+) {
   const definition = requireProvider(provider);
   const adapter = getOpenClawAdapter();
   const [runtimeVersion, pluginsPayload] = await Promise.all([
@@ -272,7 +282,8 @@ export async function installChannelPlugin(provider: ChannelConnectProviderId) {
   }
 
   try {
-    await runOpenClaw(commandArgs, { timeoutMs: 4 * 60_000 });
+    await assertVerifiedCliMutationFallback("plugins.install", { provider }, options);
+    await runOpenClaw(commandArgs, { ...options, timeoutMs: 4 * 60_000 });
   } catch (error) {
     if (isPluginApiVersionMismatch(error)) {
       throw new Error(
@@ -286,7 +297,7 @@ export async function installChannelPlugin(provider: ChannelConnectProviderId) {
   let restartError: string | null = null;
 
   try {
-    await adapter.controlGateway("restart", { timeoutMs: 60_000 });
+    await getOpenClawLifecycleService().restart();
     restarted = true;
   } catch (error) {
     restartError = redactErrorMessage(error, "The plugin was installed, but the Gateway could not be restarted.");
@@ -304,7 +315,10 @@ export async function installChannelPlugin(provider: ChannelConnectProviderId) {
   };
 }
 
-export async function startChannelWebLogin(input: { provider: ChannelConnectProviderId; accountId?: string; force?: boolean }) {
+export async function startChannelWebLogin(
+  input: { provider: ChannelConnectProviderId; accountId?: string; force?: boolean },
+  options: OpenClawCommandOptions = {}
+) {
   if (input.provider !== "whatsapp") {
     throw new Error(`${requireProvider(input.provider).label} does not support the OpenClaw web QR login flow.`);
   }
@@ -315,7 +329,7 @@ export async function startChannelWebLogin(input: { provider: ChannelConnectProv
   }
   return adapter.startWebLogin(
     { accountId: normalizeAccountId(input.accountId), force: input.force ?? true, timeoutMs: 35_000 },
-    { timeoutMs: 45_000 }
+    { ...options, timeoutMs: 45_000 }
   );
 }
 
@@ -323,7 +337,7 @@ export async function waitForChannelWebLogin(input: {
   provider: ChannelConnectProviderId;
   accountId?: string;
   currentQrDataUrl?: string;
-}) {
+}, options: OpenClawCommandOptions = {}) {
   if (input.provider !== "whatsapp") {
     throw new Error(`${requireProvider(input.provider).label} does not support the OpenClaw web QR login flow.`);
   }
@@ -338,11 +352,14 @@ export async function waitForChannelWebLogin(input: {
       currentQrDataUrl: input.currentQrDataUrl,
       timeoutMs: 30_000
     },
-    { timeoutMs: 40_000 }
+    { ...options, timeoutMs: 40_000 }
   );
 }
 
-export async function logoutConnectedChannel(input: { provider: ChannelConnectProviderId; accountId?: string }) {
+export async function logoutConnectedChannel(
+  input: { provider: ChannelConnectProviderId; accountId?: string },
+  options: OpenClawCommandOptions = {}
+) {
   requireProvider(input.provider);
   const adapter = getOpenClawAdapter();
   if (!adapter.logoutChannel) {
@@ -350,7 +367,7 @@ export async function logoutConnectedChannel(input: { provider: ChannelConnectPr
   }
   return adapter.logoutChannel(
     { channel: input.provider, accountId: normalizeAccountId(input.accountId) },
-    { timeoutMs: 30_000 }
+    { ...options, timeoutMs: 30_000 }
   );
 }
 
@@ -358,7 +375,7 @@ export async function approveChannelPairing(input: {
   provider: ChannelConnectProviderId;
   code: string;
   accountId?: string;
-}) {
+}, options: OpenClawCommandOptions = {}) {
   const definition = requireProvider(input.provider);
   const code = input.code.trim();
 
@@ -376,7 +393,12 @@ export async function approveChannelPairing(input: {
   }
   args.push("--notify");
 
-  await runOpenClaw(args, { timeoutMs: 30_000 });
+  await assertVerifiedCliMutationFallback("channels.pairing.approve", {
+    provider: input.provider,
+    accountId,
+    code
+  }, options);
+  await runOpenClaw(args, { ...options, timeoutMs: 30_000 });
 
   return {
     provider: input.provider,
@@ -392,6 +414,22 @@ function requireProvider(provider: ChannelConnectProviderId) {
     throw new Error("Unsupported OpenClaw channel provider.");
   }
   return definition;
+}
+
+async function assertVerifiedCliMutationFallback(
+  method: string,
+  params: Record<string, unknown>,
+  options: OpenClawCommandOptions
+) {
+  const identity = await getOpenClawGatewayClient().getOperatorIdentity?.();
+  if (identity && isVerifiedNativeAuthorizationProof(options.authorizationProof, identity, method, params)) {
+    return;
+  }
+
+  const requiredScopes = resolveRequiredScopes(method, params);
+  throw new Error(
+    `CLI fallback for OpenClaw mutation ${method} requires a current native Gateway authorization proof for ${requiredScopes.join(", ")}.`
+  );
 }
 
 function normalizeAccountId(value?: string) {

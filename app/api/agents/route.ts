@@ -2,6 +2,9 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { createAgent, deleteAgent, getMissionControlSnapshot, updateAgent } from "@/lib/agentos/control-plane";
+import { requireAgentOsOpenClawPreflight } from "@/lib/security/agentos-openclaw-request";
+import { requireAgentOsProductPermission } from "@/lib/security/agentos-product-authorization";
+import { recordAgentOsAuditEvent } from "@/lib/security/agentos-audit";
 import { redactSecretText, redactSecrets } from "@/lib/security/redaction";
 
 export const runtime = "nodejs";
@@ -100,7 +103,9 @@ const deleteAgentSchema = z.object({
   agentId: z.string().min(1)
 });
 
-export async function GET() {
+export async function GET(request: Request) {
+  const permission = await requireAgentOsProductPermission(request, "agents.read");
+  if ("response" in permission) return permission.response;
   const snapshot = await getMissionControlSnapshot();
   return NextResponse.json(redactSecrets({
     agents: snapshot.agents
@@ -108,11 +113,34 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
+  const authorization = await requireAgentOsOpenClawPreflight(request, {
+    operation: "agent.create",
+    method: "agents.create",
+    targetKind: "agent",
+    securityClass: "privileged-mutation",
+    executionPath: "gateway-or-verified-cli",
+    productPermission: "agents.manage"
+  });
+  if ("response" in authorization) return authorization.response;
+
   try {
     const input = createAgentSchema.parse(await request.json());
-    const created = await createAgent(input);
+    const created = await createAgent(input, authorization.commandOptions);
+    await recordAgentOsAuditEvent({
+      actor: authorization.actor,
+      operation: "agent.create",
+      targetKind: "agent",
+      targetId: input.id,
+      result: "succeeded"
+    }).catch(() => {});
     return NextResponse.json(redactSecrets(created));
   } catch (error) {
+    await recordAgentOsAuditEvent({
+      actor: authorization.actor,
+      operation: "agent.create",
+      targetKind: "agent",
+      result: "failed"
+    }).catch(() => {});
     return NextResponse.json(
       {
         error: formatAgentApiError("create", error)
@@ -123,11 +151,34 @@ export async function POST(request: Request) {
 }
 
 export async function PATCH(request: Request) {
+  const authorization = await requireAgentOsOpenClawPreflight(request, {
+    operation: "agent.update",
+    method: "agents.update",
+    targetKind: "agent",
+    securityClass: "privileged-mutation",
+    executionPath: "gateway-or-verified-cli",
+    productPermission: "agents.manage"
+  });
+  if ("response" in authorization) return authorization.response;
+
   try {
     const input = updateAgentSchema.parse(await request.json());
-    const updated = await updateAgent(input);
+    const updated = await updateAgent(input, authorization.commandOptions);
+    await recordAgentOsAuditEvent({
+      actor: authorization.actor,
+      operation: "agent.update",
+      targetKind: "agent",
+      targetId: input.id,
+      result: "succeeded"
+    }).catch(() => {});
     return NextResponse.json(redactSecrets(updated));
   } catch (error) {
+    await recordAgentOsAuditEvent({
+      actor: authorization.actor,
+      operation: "agent.update",
+      targetKind: "agent",
+      result: "failed"
+    }).catch(() => {});
     return NextResponse.json(
       {
         error: formatAgentApiError("update", error)
@@ -138,11 +189,34 @@ export async function PATCH(request: Request) {
 }
 
 export async function DELETE(request: Request) {
+  const authorization = await requireAgentOsOpenClawPreflight(request, {
+    operation: "agent.delete",
+    method: "agents.delete",
+    targetKind: "agent",
+    securityClass: "privileged-mutation",
+    executionPath: "gateway-or-verified-cli",
+    productPermission: "agents.manage"
+  });
+  if ("response" in authorization) return authorization.response;
+
   try {
     const input = deleteAgentSchema.parse(await request.json());
-    const deleted = await deleteAgent(input);
+    const deleted = await deleteAgent(input, authorization.commandOptions);
+    await recordAgentOsAuditEvent({
+      actor: authorization.actor,
+      operation: "agent.delete",
+      targetKind: "agent",
+      targetId: input.agentId,
+      result: "succeeded"
+    }).catch(() => {});
     return NextResponse.json(redactSecrets(deleted));
   } catch (error) {
+    await recordAgentOsAuditEvent({
+      actor: authorization.actor,
+      operation: "agent.delete",
+      targetKind: "agent",
+      result: "failed"
+    }).catch(() => {});
     return NextResponse.json(
       {
         error: formatAgentApiError("delete", error)
