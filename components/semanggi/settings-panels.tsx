@@ -613,17 +613,22 @@ function BrainFormModal({
   const [refreshingLevels, setRefreshingLevels] = useState(false);
   const [probeSamples, setProbeSamples] = useState<ThinkingProbeSample[] | null>(null);
 
-  // D64: options come from what is actually REGISTERED — the gateway models
-  // cache plus the brains that already exist. The static routing catalog is
-  // deliberately absent: it polluted the union with entries no live provider
-  // answers to, which is exactly what made the field look frozen. "Copy from
-  // catalog" below still offers the catalog, explicitly labelled as such.
+  // D64 rev.2: THREE sources, unioned — the gateway models cache (what the
+  // gateway actually serves), the brains that already exist (claude-code is
+  // an ACP harness and never appears in models.list), and every label the
+  // quota drivers answer to. The third one is the fix for the rigidity the
+  // operator hit: mistral models were registered in AgentOS while the cache
+  // still predated them, and a provider that HAS a driver must not wait for
+  // a cache refresh to become creatable. Driver labels absent from the cache
+  // are flagged in the hint — the brain's provider must equal the gateway's
+  // label or agent resolution will never match (the D42 lesson).
   const providerOptions = useMemo(() => {
     const set = new Set<string>();
     for (const m of gatewayModels) if (m.provider) set.add(m.provider);
     for (const b of brains) if (b.provider) set.add(b.provider);
+    for (const d of drivers) for (const key of d.providerKeys) set.add(key);
     return Array.from(set).sort();
-  }, [gatewayModels, brains]);
+  }, [gatewayModels, brains, drivers]);
 
   const modelOptions = useMemo(() => {
     const set = new Set<string>();
@@ -632,7 +637,10 @@ function BrainFormModal({
       for (const m of gatewayModels) if (m.provider === draft.provider) set.add(m.id);
     } else {
       // ACP harness providers (claude-code) never appear in models.list;
-      // their "models" are the ones the existing brains carry.
+      // their "models" are the ones the existing brains carry. For a label
+      // the cache has not seen yet, the list is empty ON PURPOSE — the field
+      // is free-typed (Combobox is an input+datalist) and the provider hint
+      // says to use the exact AgentOS label.
       for (const b of brains) if (b.provider === draft.provider && b.model) set.add(b.model);
     }
     if (draft.model) set.add(draft.model);
@@ -645,6 +653,11 @@ function BrainFormModal({
     const key = String(draft.provider ?? "").toLowerCase();
     return drivers.find((d) => d.providerKeys.includes(key))?.id ?? "generic";
   }, [drivers, draft.provider]);
+
+  const providerKnownToGateway = useMemo(
+    () => gatewayModels.some((m) => m.provider === draft.provider),
+    [gatewayModels, draft.provider],
+  );
 
   const levelOptions = useMemo(() => {
     const entry = thinkingLevels.find((t) => t.provider === draft.provider && t.model === draft.model);
@@ -787,9 +800,12 @@ function BrainFormModal({
           <Field
             label="Provider"
             hint={
-              driverId === "generic"
+              (driverId === "generic"
                 ? "No quota driver knows this label — quota windows stay generic (null)."
-                : `Quota driver: ${driverId}.`
+                : `Quota driver: ${driverId}.`) +
+              (draft.provider && !providerKnownToGateway && draft.provider !== ""
+                ? " Not in the gateway model cache yet — type the label exactly as registered in AgentOS (e.g. mistral-custom), or press Refresh Models."
+                : "")
             }
           >
             <div className="flex items-center gap-2">
