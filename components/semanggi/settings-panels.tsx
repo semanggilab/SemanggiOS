@@ -583,6 +583,8 @@ function BrainFormModal({
   initial,
   models,
   gatewayModels,
+  brains,
+  drivers,
   onRefreshModels,
   thinkingLevels,
   onReloadLevels,
