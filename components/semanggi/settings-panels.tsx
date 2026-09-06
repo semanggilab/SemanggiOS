@@ -450,6 +450,14 @@ type BrainDraft = {
    *  state and number has no such value. */
   quotaResetShortMs: string;
   quotaResetLongMs: string;
+  /** Same "no opinion" convention for the D63 rate/fact columns: "" means
+   *  driver default on create / keep stored on edit. */
+  quotaTier: string;
+  rpm: string;
+  rpd: string;
+  tpm: string;
+  tpd: string;
+  contextWindowTokens: string;
 };
 
 const EMPTY_DRAFT: BrainDraft = {
@@ -466,6 +474,12 @@ const EMPTY_DRAFT: BrainDraft = {
   enabled: true,
   quotaResetShortMs: "",
   quotaResetLongMs: "",
+  quotaTier: "",
+  rpm: "",
+  rpd: "",
+  tpm: "",
+  tpd: "",
+  contextWindowTokens: "",
 };
 
 /**
@@ -966,6 +980,75 @@ function BrainFormModal({
             </Select>
           </Field>
 
+          {/* D63: the facts the prompt budget (POC-6 §6) will be priced
+              against. Seeded from the quota driver at create time; a value
+              typed here is an explicit operator override (the D51 rule), and
+              blank means driver-default on create / keep-stored on edit. */}
+          <Field
+            label="Plan tier"
+            hint="Slug-like plan name (free, free-trial, lite, pro…). Blank = driver default."
+          >
+            <input
+              value={draft.quotaTier}
+              onChange={(e) => setDraft({ ...draft, quotaTier: e.target.value })}
+              placeholder="lite"
+              className="h-8 rounded-md border border-border bg-background px-2 text-xs outline-none focus:ring-1 focus:ring-ring"
+            />
+          </Field>
+
+          <Field label="RPM" hint="Requests per minute. Blank = driver default (create) / keep stored (edit).">
+            <input
+              value={draft.rpm}
+              onChange={(e) => setDraft({ ...draft, rpm: e.target.value })}
+              inputMode="numeric"
+              placeholder="30"
+              className="h-8 rounded-md border border-border bg-background px-2 text-xs outline-none focus:ring-1 focus:ring-ring"
+            />
+          </Field>
+
+          <Field label="RPD" hint="Requests per day. Blank = driver default / keep stored.">
+            <input
+              value={draft.rpd}
+              onChange={(e) => setDraft({ ...draft, rpd: e.target.value })}
+              inputMode="numeric"
+              placeholder="1000"
+              className="h-8 rounded-md border border-border bg-background px-2 text-xs outline-none focus:ring-1 focus:ring-ring"
+            />
+          </Field>
+
+          <Field label="TPM" hint="Tokens per minute — the measured input wall decides retries, not the advertised one.">
+            <input
+              value={draft.tpm}
+              onChange={(e) => setDraft({ ...draft, tpm: e.target.value })}
+              inputMode="numeric"
+              placeholder="7000"
+              className="h-8 rounded-md border border-border bg-background px-2 text-xs outline-none focus:ring-1 focus:ring-ring"
+            />
+          </Field>
+
+          <Field label="TPD" hint="Tokens per day. Blank = driver default / keep stored.">
+            <input
+              value={draft.tpd}
+              onChange={(e) => setDraft({ ...draft, tpd: e.target.value })}
+              inputMode="numeric"
+              placeholder="200000"
+              className="h-8 rounded-md border border-border bg-background px-2 text-xs outline-none focus:ring-1 focus:ring-ring"
+            />
+          </Field>
+
+          <Field
+            label="Context window (tokens)"
+            hint="Not carried by models.list on this gateway — fill from the provider's docs. Blank = unknown."
+          >
+            <input
+              value={draft.contextWindowTokens}
+              onChange={(e) => setDraft({ ...draft, contextWindowTokens: e.target.value })}
+              inputMode="numeric"
+              placeholder="131072"
+              className="h-8 rounded-md border border-border bg-background px-2 text-xs outline-none focus:ring-1 focus:ring-ring"
+            />
+          </Field>
+
           <Field label="Description">
             <input
               value={draft.description}
@@ -1105,6 +1188,12 @@ export function SemanggiBrainsPanel() {
           enabled: brain.enabled,
           quotaResetShortMs: brain.quotaResetShortMs != null ? String(brain.quotaResetShortMs) : "",
           quotaResetLongMs: brain.quotaResetLongMs != null ? String(brain.quotaResetLongMs) : "",
+          quotaTier: brain.quotaTier ?? "",
+          rpm: brain.rpm != null ? String(brain.rpm) : "",
+          rpd: brain.rpd != null ? String(brain.rpd) : "",
+          tpm: brain.tpm != null ? String(brain.tpm) : "",
+          tpd: brain.tpd != null ? String(brain.tpd) : "",
+          contextWindowTokens: brain.contextWindowTokens != null ? String(brain.contextWindowTokens) : "",
         }
       : EMPTY_DRAFT;
 
@@ -1119,6 +1208,15 @@ export function SemanggiBrainsPanel() {
       // the source of truth for "which family of windows" lives there.
       quotaResetShortMs: draft.quotaResetShortMs ? Number(draft.quotaResetShortMs) : undefined,
       quotaResetLongMs: draft.quotaResetLongMs ? Number(draft.quotaResetLongMs) : undefined,
+      // Same convention for the D63 facts: absent = driver default (tier,
+      // rates, context window), so a fresh brain shows exactly what the
+      // registry seeded unless the operator overrode a number.
+      quotaTier: draft.quotaTier.trim() ? draft.quotaTier.trim() : undefined,
+      rpm: draft.rpm ? Number(draft.rpm) : undefined,
+      rpd: draft.rpd ? Number(draft.rpd) : undefined,
+      tpm: draft.tpm ? Number(draft.tpm) : undefined,
+      tpd: draft.tpd ? Number(draft.tpd) : undefined,
+      contextWindowTokens: draft.contextWindowTokens ? Number(draft.contextWindowTokens) : undefined,
     });
     await reload();
   };
@@ -1137,6 +1235,15 @@ export function SemanggiBrainsPanel() {
       // alone instead of silently rewriting it to the provider default.
       quotaResetShortMs: draft.quotaResetShortMs ? Number(draft.quotaResetShortMs) : undefined,
       quotaResetLongMs: draft.quotaResetLongMs ? Number(draft.quotaResetLongMs) : undefined,
+      // D63 facts on edit: blank keeps the stored value (undefined = "no
+      // change"); there is deliberately no "clear to null" here — resetting a
+      // seeded number to null is a driver-default decision, not an edit.
+      quotaTier: draft.quotaTier.trim() ? draft.quotaTier.trim() : undefined,
+      rpm: draft.rpm ? Number(draft.rpm) : undefined,
+      rpd: draft.rpd ? Number(draft.rpd) : undefined,
+      tpm: draft.tpm ? Number(draft.tpm) : undefined,
+      tpd: draft.tpd ? Number(draft.tpd) : undefined,
+      contextWindowTokens: draft.contextWindowTokens ? Number(draft.contextWindowTokens) : undefined,
     });
     await reload();
   };

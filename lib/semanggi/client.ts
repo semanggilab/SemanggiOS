@@ -22,6 +22,13 @@ export type Brain = {
   level: Level;
   /** D64: which quota driver classifies this brain ("generic" = none). */
   quotaDriver?: string;
+  /** D63 rate/fact columns — seeded from the driver, operator-patchable. */
+  quotaTier?: string | null;
+  rpm?: number | null;
+  rpd?: number | null;
+  tpm?: number | null;
+  tpd?: number | null;
+  contextWindowTokens?: number | null;
   enabled: boolean;
   availability?: string;
   nextAvailableAt?: number | null;
