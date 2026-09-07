@@ -175,7 +175,8 @@ async function forward(request: Request, context: { params: Promise<{ path: stri
         // Label, bukan bukti — lihat catatan di kepala berkas.
         "x-semanggi-actor": actor,
       },
-      body: body && (isUpload || body.length > 0) ? body : undefined,
+      body:
+        body && (isUpload || (typeof body === "string" && body.length > 0)) ? body : undefined,
       cache: "no-store",
     });
     const text = await upstream.text();
