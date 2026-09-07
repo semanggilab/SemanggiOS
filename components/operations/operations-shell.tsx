@@ -94,10 +94,16 @@ function readPathBasename(value: string) {
 
 export function OperationsShell({
   initialSnapshot,
-  children
+  children,
+  aside,
+  asideWidth
 }: {
   initialSnapshot: MissionControlSnapshot;
   children: (context: OperationsShellContext) => ReactNode;
+  /** Semanggi (D73): panel kolom kanan, dirender sebagai sibling <main>. */
+  aside?: ReactNode;
+  /** Lebar panel sebagai nilai CSS ("40%"). Undefined = tanpa panel. */
+  asideWidth?: string;
 }) {
   const { snapshot, connectionState, refresh, setSnapshot } = useMissionControlData(initialSnapshot);
   const { surfaceTheme, setSurfaceTheme } = useMissionControlPreferences();
@@ -458,6 +464,7 @@ export function OperationsShell({
       </div>
 
       <main
+        style={asideWidth ? { width: `calc(100% - ${asideWidth})` } : undefined}
         className={cn(
           "operations-content mission-ease-smooth relative z-20 min-h-screen px-3 pb-[calc(1rem+env(safe-area-inset-bottom))] pt-0 transition-[padding] duration-500 [&_a]:inline-flex [&_a]:min-h-11 [&_a]:min-w-11 [&_a]:items-center [&_button]:min-h-11 [&_button]:min-w-11 [&_input]:min-h-11 [&_select]:min-h-11 sm:px-5 sm:[&_a]:min-h-0 sm:[&_a]:min-w-0 sm:[&_button]:min-h-0 sm:[&_button]:min-w-0 sm:[&_input]:min-h-0 sm:[&_select]:min-h-0 lg:pb-4 lg:pr-4 lg:pt-4",
           sidebarExpanded ? "lg:pl-[316px]" : "lg:pl-[80px]"
@@ -514,6 +521,15 @@ export function OperationsShell({
           })}
         </div>
       </main>
+
+      {aside ? (
+        <div
+          style={{ width: asideWidth }}
+          className="fixed right-0 top-0 z-30 h-[100dvh] shrink-0"
+        >
+          {aside}
+        </div>
+      ) : null}
 
       <WorkspaceWizardDialog
         key={workspaceWizardEditId ? `workspace-edit:${workspaceWizardEditId}` : "workspace-create"}

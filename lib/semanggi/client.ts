@@ -137,6 +137,36 @@ export type ProjectDocContent = {
   content: string | null;
 };
 
+/**
+ * One workspace file, as the "@" search and the viewer panel see it (D73).
+ *
+ * Distinct from ProjectDocStatus above, which describes the READINESS
+ * CHECKLIST — seven fixed names graded per template. This is whatever
+ * actually exists under docs/, memory/ and deliverables/, including files
+ * that were born while the work was being done and could never have been
+ * whitelisted in advance.
+ */
+export type WorkspaceFile = {
+  /** Path relative to the project workspace, e.g. "docs/adr/0001.md". */
+  path: string;
+  name: string;
+  dir: string;
+  size: number;
+  updatedAt: number | null;
+  /** Only markdown is writable — the server owns this rule, not the panel. */
+  editable: boolean;
+};
+
+export type WorkspaceFileContent = {
+  path: string;
+  exists: boolean;
+  editable: boolean;
+  /** A binary file says so rather than arriving as broken text. */
+  binary: boolean;
+  content: string | null;
+  size: number;
+};
+
 export type Task = {
   id: string;
   projectId: string;
@@ -389,7 +419,7 @@ export type PlanStep = {
 };
 
 export type ControlReply = {
-  intent: "CHAT" | "WORK" | "TASK" | "CONFIRM" | "PREPARE";
+  intent: "CHAT" | "WORK" | "TASK" | "CONFIRM" | "PREPARE" | "DOC";
   reply: string;
   reason?: string | null;
   action?: string | null;
@@ -408,6 +438,9 @@ export type ControlReply = {
     role: string | null;
     deps: string[];
   }>;
+  /** DOC: berkas yang dirujuk permintaan plus keluarannya — apa yang bisa
+   *  dibuka langsung dari balasan tanpa mengetik ulang path-nya. */
+  files?: string[];
 };
 
 export class SemanggiError extends Error {
@@ -582,6 +615,23 @@ export const semanggi = {
     call<ProjectDocContent>("GET", `work/projects/${id}/docs/${encodeURIComponent(name)}`),
   saveProjectDoc: (id: string, name: string, content: string) =>
     call<ProjectDocContent>("PUT", `work/projects/${id}/docs/${encodeURIComponent(name)}`, { content }),
+  // D73 — workspace files under docs/, memory/ and deliverables/. Path travels
+  // as a QUERY PARAM, never a path segment: a path contains "/" and would be
+  // shredded by the Next.js catch-all proxy (the same reason Model Map
+  // identifies groq models by query param).
+  workspaceFiles: (id: string, params: { q?: string; ext?: string } = {}) => {
+    const search = new URLSearchParams();
+    if (params.q) search.set("q", params.q);
+    if (params.ext) search.set("ext", params.ext);
+    return call<{ projectId: string; workspacePath: string | null; roots: string[]; files: WorkspaceFile[] }>(
+      "GET",
+      `work/projects/${id}/files${search.size ? `?${search}` : ""}`,
+    );
+  },
+  workspaceFile: (id: string, path: string) =>
+    call<WorkspaceFileContent>("GET", `work/projects/${id}/file?path=${encodeURIComponent(path)}`),
+  saveWorkspaceFile: (id: string, path: string, content: string) =>
+    call<WorkspaceFileContent>("PUT", `work/projects/${id}/file?path=${encodeURIComponent(path)}`, { content }),
   putProjectRoleLevels: (
     id: string,
     body: { profile?: Profile; roleLevels: Array<{ role: string; level: Level }> },

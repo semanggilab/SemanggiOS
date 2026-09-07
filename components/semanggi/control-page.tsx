@@ -30,7 +30,7 @@
 // the router isn't sure about becomes a question, never an action.
 
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { ArrowDown, Bot, LoaderCircle, SendHorizontal } from "lucide-react";
+import { ArrowDown, Bot, FileText, LoaderCircle, SendHorizontal } from "lucide-react";
 import {
   semanggi,
   type CatalogModel,
@@ -39,8 +39,12 @@ import {
   type ProjectDocStatus,
   type ProjectDocs,
   type ProjectSummary,
+  type Task,
+  type WorkspaceFile,
 } from "@/lib/semanggi/client";
 import { Badge, Button, CopyButton, Empty, LoadError, Modal, Notice, Select } from "./ui";
+import { MarkdownView } from "./markdown";
+import { useViewer, viewerWidthPct } from "./viewer-context";
 import { TaskDialog } from "./task-dialog";
 
 type Message =
@@ -66,9 +70,55 @@ const SLASH_COMMANDS: Array<{ prefix: string; hint: string }> = [
   { prefix: "/prepare", hint: "one analyst task → docs/plans.md + docs/tasks.md" },
   { prefix: "/work", hint: "new work, decomposed into phased tasks" },
   { prefix: "/task", hint: "command on existing tasks (status/run/cancel/…)" },
+  { prefix: "/doc", hint: "review or revise a document — @file picks it, the verb picks the role" },
 ];
 
-export function ControlPage({ activeWorkspacePath }: { activeWorkspacePath?: string | null }) {
+// --- pelengkapan otomatis di composer (D73) ----------------------------------
+//
+// Tiga token, satu mesin. Mengetik "/" menawarkan command, "TASK-" atau "#"
+// menawarkan task id, "@" menawarkan berkas workspace — dan ketiganya memakai
+// daftar, tombol, dan tombol panah yang SAMA. Tiga implementasi terpisah akan
+// menyimpang pada perilaku kecil (Escape, Tab, urutan) dan hanya satu di
+// antaranya yang akan diperbaiki saat ada yang salah.
+//
+// Polanya diuji terhadap teks SEBELUM kursor, bukan terhadap seluruh isi:
+// operator yang kembali ke tengah kalimat untuk menambahkan sebuah id tidak
+// sedang mengetik di ujung, dan saran yang hanya muncul di ujung akan diam
+// justru saat ia paling dibutuhkan.
+const TOKEN_PATTERNS = {
+  // Tetap dibatasi ke AWAL pesan: "/task" adalah deklarasi intent, dan router
+  // hanya membacanya di posisi itu (INTENT_PREFIX). Menawarkannya di tengah
+  // kalimat berarti menawarkan sesuatu yang tidak akan berlaku.
+  slash: /^(\/\w*)$/,
+  task: /(^|\s)((?:#|TASK-)[A-Za-z0-9]*)$/i,
+  file: /(^|\s)(@[A-Za-z0-9._\-/]*)$/,
+} as const;
+
+type TokenKind = keyof typeof TOKEN_PATTERNS;
+type Suggestion = { value: string; label: string; hint?: string };
+
+/** Token yang sedang diketik tepat sebelum kursor, kalau ada. */
+function activeToken(text: string, caret: number): { kind: TokenKind; token: string; start: number } | null {
+  const before = text.slice(0, caret);
+  for (const kind of ["slash", "task", "file"] as TokenKind[]) {
+    const m = TOKEN_PATTERNS[kind].exec(before);
+    if (m) {
+      const token = m[kind === "slash" ? 1 : 2];
+      return { kind, token, start: before.length - token.length };
+    }
+  }
+  return null;
+}
+
+export function ControlPage({
+  activeWorkspacePath,
+  onProjectChange,
+}: {
+  activeWorkspacePath?: string | null;
+  /** Panel viewer hidup di luar `<main>` dan tidak bisa membaca dropdown
+   *  "Active Project" halaman ini — ia diberi tahu lewat callback ini. */
+  onProjectChange?: (projectId: string) => void;
+}) {
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [projectId, setProjectId] = useState("");
   const [text, setText] = useState("");
@@ -87,20 +137,97 @@ export function ControlPage({ activeWorkspacePath }: { activeWorkspacePath?: str
   const composerRef = useRef<HTMLDivElement>(null);
   const [composerHeight, setComposerHeight] = useState(0);
 
-  // Slash suggestions: visible while the composer holds a bare "/…" token.
-  // `slashDismissed` lets Escape close the list without it popping back on
-  // the very next keystroke — it resets as soon as the token changes into a
-  // different one.
-  const [slashIndex, setSlashIndex] = useState(0);
-  const [slashDismissed, setSlashDismissed] = useState(false);
-  const slashToken = /^\/\w*$/.test(text) ? text.toLowerCase() : null;
-  const slashSuggestions = slashToken === null ? [] : SLASH_COMMANDS.filter((c) => c.prefix.startsWith(slashToken));
-  const slashOpen = slashSuggestions.length > 0 && !slashDismissed;
-  const applySlash = (prefix: string) => {
-    setText(`${prefix} `);
-    setSlashDismissed(false);
-    setSlashIndex(0);
-    textareaRef.current?.focus();
+  // Pelengkapan otomatis: satu daftar untuk tiga token (lihat TOKEN_PATTERNS).
+  // `dismissed` membuat Escape menutup daftar tanpa ia muncul lagi pada
+  // ketikan berikutnya — dan reset begitu token berubah menjadi token lain.
+  const [caret, setCaret] = useState(0);
+  const [pickIndex, setPickIndex] = useState(0);
+  const [dismissed, setDismissed] = useState<string | null>(null);
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [files, setFiles] = useState<WorkspaceFile[]>([]);
+  const viewer = useViewer();
+
+  const token = activeToken(text, caret);
+  const dismissedHere = token !== null && dismissed === `${token.kind}:${token.token}`;
+
+  // Kandidat per jenis token. Untuk task dan berkas, penyaringannya di sisi
+  // klien atas daftar yang sudah diambil sekali per project — sebuah
+  // permintaan jaringan per ketikan akan membuat daftar berkedip dan
+  // menampilkan hasil yang tertinggal satu huruf di belakang.
+  const suggestions: Suggestion[] = (() => {
+    if (!token || dismissedHere) return [];
+    if (token.kind === "slash") {
+      const q = token.token.toLowerCase();
+      return SLASH_COMMANDS.filter((c) => c.prefix.startsWith(q)).map((c) => ({
+        value: c.prefix,
+        label: c.prefix,
+        hint: c.hint,
+      }));
+    }
+    if (token.kind === "task") {
+      // "#4F59" dan "TASK-4F59" mencari hal yang sama — router menormalkan
+      // keduanya ke satu bentuk (normalizeTaskIds), jadi daftar ini juga.
+      const q = token.token.replace(/^#/, "").replace(/^TASK-/i, "").toLowerCase();
+      return tasks
+        .filter((t) => t.id.toLowerCase().includes(q) || t.title.toLowerCase().includes(q))
+        .slice(0, 8)
+        .map((t) => ({ value: t.id, label: t.id, hint: `${t.status} · ${t.title}` }));
+    }
+    const q = token.token.slice(1).toLowerCase();
+    return files
+      .filter((f) => f.path.toLowerCase().includes(q))
+      .slice(0, 8)
+      .map((f) => ({ value: `@${f.path}`, label: f.path, hint: f.editable ? "markdown" : "read-only" }));
+  })();
+  const listOpen = suggestions.length > 0;
+
+  // Daftar task dan berkas diambil saat token-nya PERTAMA kali muncul, bukan
+  // saat halaman dibuka: keduanya milik project aktif, dan sebagian besar
+  // percakapan tidak pernah menyebut satu pun id atau berkas.
+  useEffect(() => {
+    if (!projectId || token?.kind !== "task" || tasks.length > 0) return;
+    semanggi
+      .tasks({ project: projectId })
+      .then((r) => setTasks(r.tasks))
+      .catch(() => {});
+  }, [projectId, token?.kind, tasks.length]);
+
+  useEffect(() => {
+    if (!projectId || token?.kind !== "file" || files.length > 0) return;
+    semanggi
+      .workspaceFiles(projectId)
+      .then((r) => setFiles(r.files))
+      .catch(() => {});
+  }, [projectId, token?.kind, files.length]);
+
+  // Berganti project membuang keduanya: menawarkan task id dari project lain
+  // menghasilkan perintah yang ditolak controller, dengan alasan yang tidak
+  // akan terbaca sebagai "itu id project yang salah".
+  useEffect(() => {
+    setTasks([]);
+    setFiles([]);
+    if (projectId) onProjectChange?.(projectId);
+  }, [projectId, onProjectChange]);
+
+  useEffect(() => setPickIndex(0), [text, caret]);
+
+  /** Mengganti token yang sedang diketik dengan pilihan, lalu satu spasi. */
+  const applySuggestion = (value: string) => {
+    if (!token) return;
+    const next = `${text.slice(0, token.start)}${value} ${text.slice(caret)}`;
+    const position = token.start + value.length + 1;
+    setText(next);
+    setDismissed(null);
+    setPickIndex(0);
+    // Kursor dikembalikan ke belakang sisipan, bukan ke ujung teks: sebuah
+    // penyuntingan di tengah kalimat tidak boleh melempar kursor ke akhir.
+    requestAnimationFrame(() => {
+      const el = textareaRef.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(position, position);
+      setCaret(position);
+    });
   };
 
   useEffect(() => {
@@ -215,7 +342,10 @@ export function ControlPage({ activeWorkspacePath }: { activeWorkspacePath?: str
       });
       setMessages((prev) => [...prev, { kind: "system", reply, at: Date.now() }]);
       setPendingConfirm(reply.needsConfirmation ? { text: value, target: reply.target?.id ?? "" } : null);
-      if (!confirm) setText("");
+      if (!confirm) {
+        setText("");
+        setCaret(0);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -281,7 +411,12 @@ export function ControlPage({ activeWorkspacePath }: { activeWorkspacePath?: str
               <ChatEmptyState
                 docs={docs}
                 onPick={(value) => {
+                  // Caret ikut dipindah ke ujung: token yang sedang diketik
+                  // ditentukan oleh posisi kursor, jadi pill "/doc @" hanya
+                  // memunculkan pencarian berkas kalau kursornya memang di
+                  // belakang "@".
                   setText(value);
+                  setCaret(value.length);
                   textareaRef.current?.focus();
                 }}
               />
@@ -295,7 +430,7 @@ export function ControlPage({ activeWorkspacePath }: { activeWorkspacePath?: str
                   </div>
                 </div>
               ) : (
-                <SystemMessage key={index} reply={message.reply} onOpenTask={setOpenTask} />
+                <SystemMessage key={index} reply={message.reply} onOpenTask={setOpenTask} onOpenFile={viewer.open} />
               ),
             )}
             {busy ? <ThinkingBubble /> : null}
@@ -326,8 +461,16 @@ export function ControlPage({ activeWorkspacePath }: { activeWorkspacePath?: str
           content ever hides behind it. */}
       <div
         ref={composerRef}
-        className="fixed inset-x-0 bottom-0 z-20 border-t border-border/70 bg-background/95 px-6 pt-3 backdrop-blur-xl"
-        style={{ paddingBottom: "max(0.75rem, env(safe-area-inset-bottom))" }}
+        className="fixed bottom-0 left-0 z-20 border-t border-border/70 bg-background/95 px-6 pt-3 backdrop-blur-xl"
+        style={{
+          paddingBottom: "max(0.75rem, env(safe-area-inset-bottom))",
+          // Composer ber-`position: fixed` terhadap JENDELA, bukan terhadap
+          // kolom ini — jadi ia tidak ikut menyusut saat panel viewer terbuka
+          // dan separuhnya akan tertutup panel. Lebarnya dihitung dari lebar
+          // panel yang sama yang dipakai shell (viewer-context), bukan dari
+          // salinan angka kedua yang bisa berbeda.
+          right: `${viewerWidthPct(viewer)}%`,
+        }}
       >
         <div className="mx-auto w-full max-w-3xl">
           {pendingConfirm ? (
@@ -347,29 +490,29 @@ export function ControlPage({ activeWorkspacePath }: { activeWorkspacePath?: str
               </Notice>
             </div>
           ) : null}
-          {slashOpen ? (
+          {listOpen ? (
             // Suggestions float ABOVE the input, chat-completion style. The
-            // list mirrors SLASH_COMMANDS order (prepare/work/task) so
+            // list mirrors SLASH_COMMANDS order (prepare/work/task/doc) so
             // ArrowDown walks the same order the eye already scanned.
             <div className="relative mb-2">
-              <div className="absolute bottom-full left-0 z-30 w-72 overflow-hidden rounded-lg border border-border bg-background shadow-lg">
-                {slashSuggestions.map((cmd, i) => (
+              <div className="absolute bottom-full left-0 z-30 max-h-72 w-96 max-w-full overflow-y-auto overflow-x-hidden rounded-lg border border-border bg-background shadow-lg">
+                {suggestions.map((item, i) => (
                   <button
-                    key={cmd.prefix}
+                    key={item.value}
                     type="button"
                     // mousedown, not click: clicking would blur the textarea
                     // first and the focus return below would fight the click.
                     onMouseDown={(event) => {
                       event.preventDefault();
-                      applySlash(cmd.prefix);
+                      applySuggestion(item.value);
                     }}
-                    onMouseEnter={() => setSlashIndex(i)}
+                    onMouseEnter={() => setPickIndex(i)}
                     className={`flex w-full flex-col items-start px-3 py-1.5 text-left transition-colors ${
-                      i === slashIndex ? "bg-accent" : "hover:bg-accent/60"
+                      i === pickIndex ? "bg-accent" : "hover:bg-accent/60"
                     }`}
                   >
-                    <span className="text-xs font-semibold">{cmd.prefix}</span>
-                    <span className="text-[10px] text-muted-foreground">{cmd.hint}</span>
+                    <span className="w-full truncate font-mono text-xs font-semibold">{item.label}</span>
+                    {item.hint ? <span className="w-full truncate text-[10px] text-muted-foreground">{item.hint}</span> : null}
                   </button>
                 ))}
               </div>
@@ -387,35 +530,39 @@ export function ControlPage({ activeWorkspacePath }: { activeWorkspacePath?: str
                 value={text}
                 onChange={(event) => {
                   setText(event.target.value);
-                  // A different (or absent) slash token is a new question —
-                  // undismiss the list so typing "/w" after dismissing "/p"
-                  // shows /work again.
-                  if (!/^\/\w*$/.test(event.target.value)) setSlashDismissed(false);
+                  setCaret(event.target.selectionStart ?? event.target.value.length);
                 }}
+                // Kursor bisa pindah tanpa teks berubah (klik, panah, Home) —
+                // dan token yang sedang diketik ditentukan oleh posisinya,
+                // bukan hanya oleh isinya.
+                onSelect={(event) => setCaret((event.target as HTMLTextAreaElement).selectionStart ?? 0)}
                 onKeyDown={(event) => {
-                  // Slash-suggestion keys come first: with the list open,
-                  // Enter COMPLETES rather than sends — otherwise the most
-                  // common flow ("type /, press enter") would send a bare
-                  // "/" to the router and get a CONFIRM back.
-                  if (slashOpen) {
+                  // Suggestion keys come first: with the list open, Enter
+                  // COMPLETES rather than sends — otherwise the most common
+                  // flow ("type /, press enter") would send a bare "/" to the
+                  // router and get a CONFIRM back.
+                  if (listOpen) {
                     if (event.key === "ArrowDown") {
                       event.preventDefault();
-                      setSlashIndex((i) => (i + 1) % slashSuggestions.length);
+                      setPickIndex((i) => (i + 1) % suggestions.length);
                       return;
                     }
                     if (event.key === "ArrowUp") {
                       event.preventDefault();
-                      setSlashIndex((i) => (i - 1 + slashSuggestions.length) % slashSuggestions.length);
+                      setPickIndex((i) => (i - 1 + suggestions.length) % suggestions.length);
                       return;
                     }
                     if (event.key === "Enter" || event.key === "Tab") {
                       event.preventDefault();
-                      applySlash(slashSuggestions[slashIndex].prefix);
+                      applySuggestion(suggestions[pickIndex].value);
                       return;
                     }
                     if (event.key === "Escape") {
                       event.preventDefault();
-                      setSlashDismissed(true);
+                      // Ditandai per TOKEN, bukan sebagai satu bendera: menutup
+                      // daftar untuk "@doc" tidak boleh membungkam daftar
+                      // berikutnya yang muncul untuk "TASK-".
+                      setDismissed(token ? `${token.kind}:${token.token}` : null);
                       return;
                     }
                   }
@@ -478,6 +625,7 @@ export function ControlPage({ activeWorkspacePath }: { activeWorkspacePath?: str
             // textarea is always mounted, so focusing synchronously is safe
             // even though the modal unmounts in the same update.
             setText(value);
+            setCaret(value.length);
             setOpenDoc(null);
             textareaRef.current?.focus();
           }}
@@ -783,181 +931,6 @@ function DocModal({
 }
 
 /**
- * Minimal markdown renderer — headings, lists (including the `- [ ]` task
- * checkboxes plans.md is specified to use), fenced code, blockquotes, rules,
- * and inline emphasis/code/links. Hand-rolled because the fork must not gain
- * an npm dependency for one read-only view, and because the documents this
- * renders are the repo's own planning docs whose constructs this covers.
- */
-function MarkdownView({ content }: { content: string }) {
-  const blocks: ReactNode[] = [];
-  const lines = content.split("\n");
-  let i = 0;
-  let key = 0;
-
-  const renderInline = (text: string): React.ReactNode[] => {
-    const parts: React.ReactNode[] = [];
-    const pattern = /(\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`|\[[^\]]+\]\([^)]+\))/g;
-    let last = 0;
-    let match: RegExpExecArray | null;
-    let k = 0;
-    while ((match = pattern.exec(text)) !== null) {
-      if (match.index > last) parts.push(text.slice(last, match.index));
-      const token = match[0];
-      if (token.startsWith("**")) parts.push(<strong key={k++}>{token.slice(2, -2)}</strong>);
-      else if (token.startsWith("`")) parts.push(<code key={k++} className="rounded bg-muted px-1 py-0.5 text-[0.85em]">{token.slice(1, -1)}</code>);
-      else if (token.startsWith("[")) {
-        const m = token.match(/\[([^\]]+)\]\(([^)]+)\)/);
-        parts.push(
-          <a key={k++} href={m?.[2] ?? "#"} target="_blank" rel="noreferrer" className="text-primary underline underline-offset-2">
-            {m?.[1] ?? token}
-          </a>,
-        );
-      } else parts.push(<em key={k++}>{token.slice(1, -1)}</em>);
-      last = match.index + token.length;
-    }
-    if (last < text.length) parts.push(text.slice(last));
-    return parts;
-  };
-
-  while (i < lines.length) {
-    const line = lines[i];
-    if (line.startsWith("```")) {
-      const code: string[] = [];
-      i++;
-      while (i < lines.length && !lines[i].startsWith("```")) code.push(lines[i++]);
-      i++;
-      blocks.push(
-        <pre key={key++} className="overflow-x-auto rounded-md border border-border bg-muted/50 p-2 text-[0.8em] leading-relaxed">
-          <code>{code.join("\n")}</code>
-        </pre>,
-      );
-      continue;
-    }
-    if (line.trim().startsWith("|") && i + 1 < lines.length && /^\s*\|[\s:|-]+\|?\s*$/.test(lines[i + 1])) {
-      // GFM table: header row, dashed separator, body rows. plans.md dan
-      // breakdown dokumen lain memakainya — merender garis pipi mentah di
-      // viewer yang seharusnya memformat markdown akan mengalahkan tujuan
-      // viewer itu sendiri.
-      const splitRow = (row: string) =>
-        row
-          .trim()
-          .replace(/^\|/, "")
-          .replace(/\|$/, "")
-          .split("|")
-          .map((c) => c.trim());
-      const header = splitRow(lines[i]);
-      i += 2;
-      const body: string[][] = [];
-      while (i < lines.length && lines[i].trim().startsWith("|")) {
-        body.push(splitRow(lines[i]));
-        i++;
-      }
-      blocks.push(
-        <div key={key++} className="overflow-x-auto rounded-md border border-border">
-          <table className="w-full text-left text-xs">
-            <thead className="bg-muted/50">
-              <tr>
-                {header.map((cell, ci) => (
-                  <th key={ci} className="px-2 py-1 font-medium">
-                    {renderInline(cell)}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {body.map((row, ri) => (
-                <tr key={ri} className="border-t border-border/60">
-                  {row.map((cell, ci) => (
-                    <td key={ci} className="px-2 py-1">
-                      {renderInline(cell)}
-                    </td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>,
-      );
-      continue;
-    }
-    const heading = line.match(/^(#{1,4})\s+(.*)$/);
-    if (heading) {
-      const size = ["text-lg", "text-base", "text-sm", "text-sm"][heading[1].length - 1];
-      blocks.push(
-        <p key={key++} className={`${size} font-semibold pt-1`}>
-          {renderInline(heading[2])}
-        </p>,
-      );
-      i++;
-      continue;
-    }
-    if (/^\s*(-{3,}|\*{3,})\s*$/.test(line)) {
-      blocks.push(<hr key={key++} className="border-border/60" />);
-      i++;
-      continue;
-    }
-    if (line.startsWith(">")) {
-      const quote: string[] = [];
-      while (i < lines.length && lines[i].startsWith(">")) quote.push(lines[i++].replace(/^>\s?/, ""));
-      blocks.push(
-        <blockquote key={key++} className="border-l-2 border-border pl-2 text-muted-foreground">
-          {renderInline(quote.join(" "))}
-        </blockquote>,
-      );
-      continue;
-    }
-    // Three checkbox states, mirroring the register flow's marks: `[ ]` open,
-    // `[-]` registered in the controller (written back by registerTasks), and
-    // `[x]` done. A `[-]` row is alive in the system, so it gets a neutral
-    // filled glyph — not an empty box (which reads "never touched") and not
-    // a strike-through (which reads "finished").
-    const task = line.match(/^\s*- \[( |x|X|-)\]\s+(.*)$/);
-    if (task) {
-      blocks.push(
-        <div key={key++} className="flex items-start gap-1.5">
-          <span className={task[1] === " " ? "text-muted-foreground" : task[1] === "-" ? "text-sky-500" : "text-emerald-500"}>
-            {task[1] === " " ? "☐" : task[1] === "-" ? "▣" : "☑"}
-          </span>
-          <span className={task[1].toLowerCase() === "x" ? "text-muted-foreground line-through" : ""}>{renderInline(task[2])}</span>
-        </div>,
-      );
-      i++;
-      continue;
-    }
-    if (/^\s*[-*]\s+/.test(line)) {
-      blocks.push(
-        <div key={key++} className="flex items-start gap-1.5">
-          <span className="text-muted-foreground">•</span>
-          <span>{renderInline(line.replace(/^\s*[-*]\s+/, ""))}</span>
-        </div>,
-      );
-      i++;
-      continue;
-    }
-    const ordered = line.match(/^\s*(\d+)\.\s+(.*)$/);
-    if (ordered) {
-      blocks.push(
-        <div key={key++} className="flex items-start gap-1.5">
-          <span className="text-muted-foreground">{ordered[1]}.</span>
-          <span>{renderInline(ordered[2])}</span>
-        </div>,
-      );
-      i++;
-      continue;
-    }
-    if (line.trim() === "") {
-      blocks.push(<div key={key++} className="h-1.5" />);
-      i++;
-      continue;
-    }
-    blocks.push(<p key={key++} className="leading-relaxed">{renderInline(line)}</p>);
-    i++;
-  }
-  return <div className="space-y-1 text-sm">{blocks}</div>;
-}
-
-/**
  * The exact WORK prompts behind the "Create plans" / "Create tasks" actions.
  * Module-level (and docs-driven) so the chat empty state and the document
  * modal share ONE text each — two copies would silently diverge, the exact
@@ -1028,6 +1001,9 @@ function ChatEmptyState({ docs, onPick }: { docs: ProjectDocs | null; onPick: (t
     ...(tasksDoc?.exists === true ? [{ label: "Register tasks", text: REGISTER_TASKS_TEXT }] : []),
     { label: "/work", text: "/work " },
     { label: "/task", text: "/task " },
+    // Berhenti tepat setelah "@": itu memicu pencarian berkas di composer,
+    // jadi pill ini menyerahkan kursor persis di tempat daftar akan muncul.
+    { label: "/doc", text: "/doc @" },
     { label: "Check a task", text: "/task status " },
     { label: "Stop a task", text: "/task stop " },
     { label: "Run a task", text: "/task run " },
@@ -1080,7 +1056,15 @@ function ThinkingBubble() {
   );
 }
 
-function SystemMessage({ reply, onOpenTask }: { reply: ControlReply; onOpenTask: (taskId: string) => void }) {
+function SystemMessage({
+  reply,
+  onOpenTask,
+  onOpenFile,
+}: {
+  reply: ControlReply;
+  onOpenTask: (taskId: string) => void;
+  onOpenFile: (path: string) => void;
+}) {
   const tone =
     reply.intent === "CONFIRM"
       ? "warning"
@@ -1130,7 +1114,30 @@ function SystemMessage({ reply, onOpenTask }: { reply: ControlReply; onOpenTask:
             </>
           ) : null}
         </div>
-        <MarkdownView content={displayReply} />
+        <MarkdownView content={displayReply} onOpenFile={onOpenFile} />
+        {/* Berkas yang disebut balasan /doc — yang dirujuk permintaan plus
+            keluarannya. Dirender terpisah dari markdown karena keduanya
+            adalah HASIL perintah, bukan sekadar nama yang kebetulan lewat di
+            dalam kalimat: yang ini pantas terlihat sebagai baris tersendiri. */}
+        {reply.files && reply.files.length > 0 ? (
+          <div className="flex flex-wrap gap-1.5 pt-0.5">
+            {reply.files.map((path) => (
+              <button
+                key={path}
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onOpenFile(path);
+                }}
+                title={`Buka ${path} di panel viewer`}
+                className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 font-mono text-[10px] text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground"
+              >
+                <FileText className="h-3 w-3" />
+                {path}
+              </button>
+            ))}
+          </div>
+        ) : null}
         {reply.registered && reply.registered.length > 0 ? (
           <div className="space-y-1.5 pt-0.5">
             <div className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Registered tasks</div>

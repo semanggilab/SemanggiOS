@@ -70,6 +70,14 @@ const ALLOWED: Array<{ method: string; pattern: RegExp }> = [
   // (readiness.md). Route controller baru belum nyata bagi halaman sampai ia
   // terdaftar di sini.
   { method: "PUT", pattern: /^work\/projects\/[A-Za-z0-9_-]+\/docs\/[a-z-]+$/ },
+  // D73 — berkas workspace untuk pencarian "@" dan panel viewer. Path berkas
+  // dikirim sebagai QUERY PARAM, bukan segmen: sebuah path berisi "/" tidak
+  // selamat melewati catch-all ini (alasan yang sama dengan Model Map). Yang
+  // menjaga path tetap di dalam workspace adalah controller, bukan pola di
+  // sini — mengulang aturan itu di dua tempat berarti keduanya akan menyimpang.
+  { method: "GET", pattern: /^work\/projects\/[A-Za-z0-9_-]+\/files$/ },
+  { method: "GET", pattern: /^work\/projects\/[A-Za-z0-9_-]+\/file$/ },
+  { method: "PUT", pattern: /^work\/projects\/[A-Za-z0-9_-]+\/file$/ },
   { method: "GET", pattern: /^work\/gateway\/(models|thinking-levels)$/ },
   { method: "GET", pattern: /^work\/quota-drivers$/ },
   // Model Map (D66): the join read plus its two write paths. PATCH identifies
