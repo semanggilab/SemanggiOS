@@ -40,6 +40,7 @@ import {
   type ProjectDocs,
   type ProjectSummary,
   type Task,
+  type TranscriptTurn,
   type WorkspaceFile,
 } from "@/lib/semanggi/client";
 import { Badge, Button, CopyButton, Empty, LoadError, Modal, Notice, Select } from "./ui";
@@ -425,7 +426,10 @@ export function ControlPage({
             {messages.map((message, index) =>
               message.kind === "operator" ? (
                 <div key={index} className="flex justify-end">
-                  <div className="max-w-[82%] rounded-[20px] bg-primary px-4 py-2.5 text-sm leading-relaxed text-primary-foreground">
+                  {/* Tinted, not filled: a full `bg-primary` bubble reads as a
+                      button and dominates the column; /15 keeps the operator's
+                      own words visually secondary to the system's replies. */}
+                  <div className="max-w-[82%] rounded-[20px] bg-primary/15 px-4 py-2.5 text-sm leading-relaxed text-foreground">
                     {message.text}
                   </div>
                 </div>
@@ -1173,7 +1177,112 @@ function SystemMessage({
             <PlanTable steps={plan} created={reply.created === true} />
           </div>
         ) : null}
+        {/* /doc yang membuat task adalah pekerjaan yang berjalan SETELAH balasan
+            ini mendarat — tanpa bagian ini, operator hanya melihat "task
+            dibuat" lalu harus membuka dialog sendiri untuk tahu progresnya. */}
+        {reply.intent === "DOC" && reply.taskId ? (
+          <DocTaskLive taskId={reply.taskId} />
+        ) : null}
       </div>
+    </div>
+  );
+}
+
+/** Status yang masih bergerak: belum terminal dan belum diparkir untuk manusia.
+ *  WAIT_* dicakup lewat prefix-nya — kosakata WAIT bertambah tanpa daftar ini
+ *  perlu ikut (kegagalan yang sama dengan katalog saran slash bila terlupa). */
+function taskInFlight(status: string): boolean {
+  return (
+    ["CREATED", "QUEUED", "DISPATCHED", "RUNNING"].includes(status) || status.startsWith("WAIT_")
+  );
+}
+
+const LIVE_POLL_MS = 10_000;
+
+/**
+ * Live progress untuk task yang lahir dari sebuah balasan /doc.
+ *
+ * Mem-poll `task` + `transcript` tiap 10 detik; berhenti total saat status
+ * tidak lagi in-flight (COMPLETE/FAILED/CANCELLED/BLOCKED/RESUMABLE) — poll
+ * pada status diam adalah permintaan yang jawabannya tidak akan berubah.
+ * Baris terakhir transkrip yang ditampilkan adalah AKTIVITAS terbaru yang
+ * tercatat controller, bukan teks yang diarangkan: operator melihat apa yang
+ * sedang dikerjakan agennya, bukan hanya badge status yang tidak bergerak.
+ */
+function DocTaskLive({ taskId }: { taskId: string }) {
+  const [status, setStatus] = useState<string | null>(null);
+  const [turns, setTurns] = useState<TranscriptTurn[]>([]);
+  const [failed, setFailed] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const poll = async () => {
+      try {
+        const [detail, transcript] = await Promise.all([
+          semanggi.task(taskId),
+          semanggi.transcript(taskId),
+        ]);
+        if (cancelled) return;
+        setFailed(null);
+        setStatus(detail.task.status);
+        setTurns(transcript.turns);
+        if (!taskInFlight(detail.task.status)) return; // selesai: jangan jadwalkan lagi
+      } catch (err) {
+        if (cancelled) return;
+        // Poll gagal (mis. jaringan sesaat) bukan alasan menghentikan pelacakan
+        // — tasknya mungkin masih berjalan. Tampil sebagai catatan, coba lagi.
+        setFailed(err instanceof Error ? err.message : String(err));
+      }
+      if (!cancelled) timer = setTimeout(poll, LIVE_POLL_MS);
+    };
+    void poll();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [taskId]);
+
+  const inFlight = status === null || taskInFlight(status);
+  const recent = turns.slice(-3).reverse();
+
+  return (
+    <div className="space-y-1.5 rounded-md border border-border bg-background/60 px-2.5 py-2">
+      <div className="flex items-center gap-2">
+        {inFlight ? (
+          <LoaderCircle className="h-3.5 w-3.5 animate-spin text-primary" />
+        ) : (
+          <span
+            className={`h-2 w-2 rounded-full ${
+              status === "COMPLETE" ? "bg-emerald-400" : status === "BLOCKED" || status === "FAILED" ? "bg-amber-400" : "bg-muted-foreground/50"
+            }`}
+          />
+        )}
+        <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+          {inFlight ? (status ?? "loading") : status}
+        </span>
+        <span className="text-[10px] text-muted-foreground">
+          {inFlight ? `· refreshing every ${LIVE_POLL_MS / 1000}s` : "· stopped"}
+        </span>
+      </div>
+      {failed ? <div className="text-[10px] text-amber-600 dark:text-amber-300">{failed}</div> : null}
+      {recent.length > 0 ? (
+        <div className="space-y-0.5">
+          {recent.map((turn, i) => (
+            <div key={`${turn.executionId ?? ""}-${turn.seq ?? turn.at}-${i}`} className="flex gap-2 text-[10px] leading-relaxed">
+              <span className="shrink-0 font-mono text-muted-foreground">
+                {new Date(turn.at).toLocaleTimeString([], { hour12: false })}
+              </span>
+              <span className="shrink-0 font-semibold text-muted-foreground">{turn.role}</span>
+              <span className="min-w-0 flex-1 truncate text-muted-foreground">
+                {turn.text.replace(/\s+/g, " ").trim() || "(no text)"}
+              </span>
+            </div>
+          ))}
+        </div>
+      ) : status !== null && turns.length === 0 ? (
+        <div className="text-[10px] text-muted-foreground">No transcript yet.</div>
+      ) : null}
     </div>
   );
 }
