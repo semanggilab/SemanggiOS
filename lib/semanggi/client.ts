@@ -501,6 +501,31 @@ export const semanggi = {
     call<{ events: WorkEvent[] }>("GET", `work/events?subject=${encodeURIComponent(subject)}&limit=${limit}`),
   transcript: (id: string) => call<{ taskId: string; turns: TranscriptTurn[] }>("GET", `work/tasks/${id}/transcript`),
 
+  // Lampiran operator (D76) — bytes MENTAH, bukan JSON: fetch() dengan body
+  // Buffer/ArrayBuffer menjaga berkas biner utuh melintasi proxy (yang kini
+  // meneruskan content-type octet-stream apa adanya). Satu berkas per panggilan;
+  // multi-file diulang oleh pemanggil supaya kegagalan per berkas terlapor per berkas.
+  upload: async (projectId: string, name: string, bytes: ArrayBuffer | Blob | File) => {
+    const res = await fetch(`/api/semanggi/work/projects/${projectId}/uploads?name=${encodeURIComponent(name)}`, {
+      method: "POST",
+      headers: { "content-type": "application/octet-stream" },
+      body: bytes,
+      cache: "no-store",
+    });
+    const text = await res.text();
+    let parsed: unknown = null;
+    try {
+      parsed = text ? JSON.parse(text) : null;
+    } catch {
+      throw new SemanggiError(`Unexpected non-JSON reply (HTTP ${res.status})`, res.status);
+    }
+    if (!res.ok) {
+      const payload = parsed as { error?: string; code?: string } | null;
+      throw new SemanggiError(payload?.error ?? `HTTP ${res.status}`, res.status, payload?.code ?? null);
+    }
+    return parsed as { ok: true; path: string; size: number };
+  },
+
   start: (id: string) => call<{ task: Task }>("POST", `work/tasks/${id}/start`, {}),
   stop: (id: string, reason?: string) => call<{ task: Task }>("POST", `work/tasks/${id}/stop`, { reason }),
   cancel: (id: string, note?: string) => call<{ task: Task }>("POST", `work/tasks/${id}/cancel`, { note }),

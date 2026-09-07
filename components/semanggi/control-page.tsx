@@ -30,7 +30,7 @@
 // the router isn't sure about becomes a question, never an action.
 
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { ArrowDown, Bot, FileText, LoaderCircle, SendHorizontal } from "lucide-react";
+import { ArrowDown, Bot, FileText, LoaderCircle, Paperclip, SendHorizontal } from "lucide-react";
 import {
   semanggi,
   type CatalogModel,
@@ -182,9 +182,12 @@ export function ControlPage({
   })();
   const listOpen = suggestions.length > 0;
 
-  // Daftar task dan berkas diambil saat token-nya PERTAMA kali muncul, bukan
-  // saat halaman dibuka: keduanya milik project aktif, dan sebagian besar
-  // percakapan tidak pernah menyebut satu pun id atau berkas.
+  // Daftar task diambil saat token-nya PERTAMA kali muncul (task jarang lahir
+  // menit ini juga), tetapi daftar BERKAS diambil SETIAP kali token "@" aktif:
+  // deliverables/<task-id>/ lahir terus dari task yang selesai, dan daftar yang
+  // di-cache sejak "@" pertama menunjukkan dunia kemarin (laporan operator:
+  // "file hasil pengerjaan tidak muncul"). Satu permintaan per aktivasi token,
+  // bukan per ketikan.
   useEffect(() => {
     if (!projectId || token?.kind !== "task" || tasks.length > 0) return;
     semanggi
@@ -194,12 +197,18 @@ export function ControlPage({
   }, [projectId, token?.kind, tasks.length]);
 
   useEffect(() => {
-    if (!projectId || token?.kind !== "file" || files.length > 0) return;
+    if (!projectId || token?.kind !== "file") return;
+    let cancelled = false;
     semanggi
       .workspaceFiles(projectId)
-      .then((r) => setFiles(r.files))
+      .then((r) => {
+        if (!cancelled) setFiles(r.files);
+      })
       .catch(() => {});
-  }, [projectId, token?.kind, files.length]);
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, token?.kind]);
 
   // Berganti project membuang keduanya: menawarkan task id dari project lain
   // menghasilkan perintah yang ditolak controller, dengan alasan yang tidak
@@ -351,6 +360,39 @@ export function ControlPage({
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
+    }
+  };
+
+  // Lampiran operator (D76): unggah ke tmp/uploads/, sisipkan rujukan
+  // @tmp/uploads/<nama> ke composer — rujukan itulah yang dibaca agen, dan
+  // preamble task menginstruksikan penghapusannya segera setelah dimuat.
+  // Berurutan, bukan Promise.all: kegagalan satu berkas dilaporkan per berkas
+  // dan berkas lain tetap terunggah.
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const uploadFiles = async (list: FileList | null) => {
+    if (!list || list.length === 0 || !projectId) return;
+    setUploading(true);
+    setUploadError(null);
+    const inserted: string[] = [];
+    try {
+      for (const file of Array.from(list)) {
+        try {
+          const saved = await semanggi.upload(projectId, file.name, file);
+          inserted.push(`@${saved.path}`);
+        } catch (err) {
+          setUploadError(`${file.name}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+    if (inserted.length > 0) {
+      setText((prev) => (prev.trim() ? `${prev.replace(/\s+$/, "")} ` : "") + inserted.join(" "));
+      textareaRef.current?.focus();
     }
   };
 
@@ -522,6 +564,11 @@ export function ControlPage({
               </div>
             </div>
           ) : null}
+          {uploadError ? (
+            <div className="pb-2">
+              <Notice tone="warning">{uploadError}</Notice>
+            </div>
+          ) : null}
           <form
             onSubmit={(event) => {
               event.preventDefault();
@@ -582,6 +629,23 @@ export function ControlPage({
                 placeholder="Message Semanggi…"
                 className="max-h-[200px] flex-1 resize-none border-0 bg-transparent px-1 py-1.5 text-sm outline-none focus:ring-0 placeholder:text-muted-foreground"
               />
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                hidden
+                onChange={(event) => void uploadFiles(event.target.files)}
+              />
+              <button
+                type="button"
+                aria-label="Attach files"
+                title="Attach files (uploaded to tmp/uploads/, deleted after the task loads them)"
+                disabled={busy || uploading || !projectId}
+                onClick={() => fileInputRef.current?.click()}
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-opacity hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {uploading ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Paperclip className="h-4 w-4" />}
+              </button>
               <button
                 type="submit"
                 aria-label="Send"

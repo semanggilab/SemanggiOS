@@ -78,6 +78,9 @@ const ALLOWED: Array<{ method: string; pattern: RegExp }> = [
   { method: "GET", pattern: /^work\/projects\/[A-Za-z0-9_-]+\/files$/ },
   { method: "GET", pattern: /^work\/projects\/[A-Za-z0-9_-]+\/file$/ },
   { method: "PUT", pattern: /^work\/projects\/[A-Za-z0-9_-]+\/file$/ },
+  // D76 — lampiran operator. Body BYTES MENTAH (lihat forwardBinary); nama
+  // berkas dikirim sebagai query param, alasan yang sama dengan file?path=.
+  { method: "POST", pattern: /^work\/projects\/[A-Za-z0-9_-]+\/uploads$/ },
   { method: "GET", pattern: /^work\/gateway\/(models|thinking-levels)$/ },
   { method: "GET", pattern: /^work\/quota-drivers$/ },
   // Model Map (D66): the join read plus its two write paths. PATCH identifies
@@ -152,18 +155,27 @@ async function forward(request: Request, context: { params: Promise<{ path: stri
   target.search = incoming.search;
 
   const actor = status.username?.trim() || "agentos";
-  const body = ["GET", "HEAD"].includes(request.method) ? undefined : await request.text();
+  // Unggahan (D76): body adalah bytes mentah — request.text() akan
+  // men-decode-nya sebagai UTF-8 dan merusak berkas biner sebelum sampai ke
+  // controller. arrayBuffer meneruskan apa adanya; content-type octet-stream
+  // dari klien dipertahankan supaya dispatcher controller tahu bentuknya.
+  const isUpload = request.method === "POST" && /^work\/projects\/[A-Za-z0-9_-]+\/uploads$/.test(joined);
+  const body = isUpload
+    ? await request.arrayBuffer()
+    : ["GET", "HEAD"].includes(request.method)
+      ? undefined
+      : await request.text();
 
   try {
     const upstream = await fetch(target, {
       method: request.method,
       headers: {
         authorization: `Bearer ${token}`,
-        "content-type": "application/json",
+        "content-type": isUpload ? "application/octet-stream" : "application/json",
         // Label, bukan bukti — lihat catatan di kepala berkas.
         "x-semanggi-actor": actor,
       },
-      body: body && body.length > 0 ? body : undefined,
+      body: body && (isUpload || body.length > 0) ? body : undefined,
       cache: "no-store",
     });
     const text = await upstream.text();
