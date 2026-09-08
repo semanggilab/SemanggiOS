@@ -754,17 +754,20 @@ function ProcessManagerModal({ brain, onClose }: { brain: Brain; onClose: () => 
           <span />
         </div>
         <div className="h-72 overflow-y-auto">
-          {rows === null && !loadFailed ? (
-            <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
-              <LoaderCircle className="mr-2 h-4 w-4 animate-spin" /> Loading sandboxes…
-            </div>
-          ) : loadFailed && rows === null ? (
-            <div className="flex h-full flex-col items-center justify-center gap-2 px-3 text-center text-xs text-muted-foreground">
-              Could not load sandboxes{error ? ` — ${error}` : ""}.
-              <Button size="sm" variant="outline" onClick={() => void reload()}>
-                Retry
-              </Button>
-            </div>
+          {rows === null ? (
+            // Nested so TS can narrow: the else branch owns rows !== null.
+            loadFailed ? (
+              <div className="flex h-full flex-col items-center justify-center gap-2 px-3 text-center text-xs text-muted-foreground">
+                Could not load sandboxes{error ? ` — ${error}` : ""}.
+                <Button size="sm" variant="outline" onClick={() => void reload()}>
+                  Retry
+                </Button>
+              </div>
+            ) : (
+              <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
+                <LoaderCircle className="mr-2 h-4 w-4 animate-spin" /> Loading sandboxes…
+              </div>
+            )
           ) : rows.length === 0 ? (
             <div className="flex h-full items-center justify-center px-3 text-center text-xs text-muted-foreground">
               No live sandbox for this Brain yet — Test Connection provisions a probe agent, Create adds an empty one.
