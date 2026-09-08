@@ -30,7 +30,7 @@
 // the router isn't sure about becomes a question, never an action.
 
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { ArrowDown, Bot, FileText, LoaderCircle, Paperclip, SendHorizontal } from "lucide-react";
+import { ArrowDown, Bot, FileText, LoaderCircle, Paperclip, SendHorizontal, X } from "lucide-react";
 import {
   semanggi,
   type CatalogModel,
@@ -54,6 +54,36 @@ type Message =
 
 const MIN_ROWS = 1;
 const MAX_TEXTAREA_PX = 200;
+
+// --- lampiran operator: teks saja (D77) ---------------------------------------
+//
+// Daftar ini MENGACU kosakata server (UPLOAD_TEXT_EXTS di
+// domain/workspace-files.mjs), bukan menyalinnya bebas: server tetap pemilik
+// aturannya, daftar ini hanya menolak lebih awal supaya operator tidak
+// menunggu satu round-trip untuk dibilang tidak. Selisih daftar menurunkan
+// dirinya menjadi UX kasar, bukan celah keamanan — pemeriksaan isi (endusan
+// NUL) tetap di server.
+const TEXT_UPLOAD_EXTS = [
+  ".md", ".markdown", ".mdx", ".txt", ".text", ".log",
+  ".json", ".jsonl", ".ndjson", ".csv", ".tsv",
+  ".yml", ".yaml", ".toml", ".ini", ".conf", ".cfg",
+  ".xml", ".html", ".htm", ".css", ".scss", ".less",
+  ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx",
+  ".py", ".rb", ".go", ".rs", ".java", ".kt", ".kts",
+  ".c", ".h", ".cpp", ".hpp", ".cc", ".cs", ".php",
+  ".sh", ".bash", ".zsh", ".sql", ".graphql", ".svg",
+] as const;
+
+const TEXT_UPLOAD_ACCEPT = TEXT_UPLOAD_EXTS.join(",");
+
+function isTextUploadName(name: string): boolean {
+  const lower = name.toLowerCase();
+  return TEXT_UPLOAD_EXTS.some((ext) => lower.endsWith(ext));
+}
+
+/** Satu lampiran yang menunggu di composer: diunggah ke staging, rujukan
+ *  @tmp/uploads/… sudah tersisip ke teks, chip-nya menunggu dikirim. */
+type Attachment = { name: string; path: string };
 
 // SATU template bersama: tombol "Register tasks" di modal dokumen dan pill
 // quick-prompt di empty state harus menyisipkan teks yang sama persis — dua
@@ -355,6 +385,9 @@ export function ControlPage({
       if (!confirm) {
         setText("");
         setCaret(0);
+        // Rujukan sudah terkirim — staging kini milik task yang mengadopsinya.
+        // Chip yang tertinggal menautkan berkas yang tak dirujuk teks apa pun.
+        setAttachments([]);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -363,13 +396,16 @@ export function ControlPage({
     }
   };
 
-  // Lampiran operator (D76): unggah ke tmp/uploads/, sisipkan rujukan
-  // @tmp/uploads/<nama> ke composer — rujukan itulah yang dibaca agen, dan
-  // preamble task menginstruksikan penghapusannya segera setelah dimuat.
-  // Berurutan, bukan Promise.all: kegagalan satu berkas dilaporkan per berkas
-  // dan berkas lain tetap terunggah.
+  // Lampiran operator (D76 staging, D77 adopsi per-task): unggah ke
+  // tmp/uploads/, sisipkan rujukan @tmp/uploads/<nama> ke composer — rujukan
+  // itulah yang dibaca agen. Begitu pesan menciptakan task, controller
+  // menyalin berkasnya ke deliverables/<task-id>/tmp/uploads/ dan menulis
+  // ulang rujukannya; preamble task menginstruksikan penghapusannya segera
+  // setelah dimuat. Berurutan, bukan Promise.all: kegagalan satu berkas
+  // dilaporkan per berkas dan berkas lain tetap terunggah.
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const uploadFiles = async (list: FileList | null) => {
@@ -377,11 +413,19 @@ export function ControlPage({
     setUploading(true);
     setUploadError(null);
     const inserted: string[] = [];
+    const staged: Attachment[] = [];
     try {
       for (const file of Array.from(list)) {
+        // D77: hanya teks. Ditolak di sini supaya pesan galatnya menyebut
+        // berkas yang bermasalah, bukan menunggu 400 dari server.
+        if (!isTextUploadName(file.name)) {
+          setUploadError(`${file.name}: only text files can be attached (md, txt, json, csv, yml, …)`);
+          continue;
+        }
         try {
           const saved = await semanggi.upload(projectId, file.name, file);
           inserted.push(`@${saved.path}`);
+          staged.push({ name: file.name, path: saved.path });
         } catch (err) {
           setUploadError(`${file.name}: ${err instanceof Error ? err.message : String(err)}`);
         }
@@ -391,10 +435,42 @@ export function ControlPage({
       if (fileInputRef.current) fileInputRef.current.value = "";
     }
     if (inserted.length > 0) {
+      setAttachments((prev) => [...prev, ...staged]);
       setText((prev) => (prev.trim() ? `${prev.replace(/\s+$/, "")} ` : "") + inserted.join(" "));
       textareaRef.current?.focus();
     }
   };
+
+  // Tombol "×" pada chip: hapus berkas STAGING di server (bukan sekadar
+  // menyembunyikan chip — berkas yang ditinggalkan akan hidup sampai TTL
+  // dan bisa dibaca task yang tidak dimaksudkan), lalu buang rujukannya dari
+  // teks. Rujukan yang dibiarkan tanpa berkasnya adalah janji yang tidak
+  // akan ditepati agen.
+  const removeAttachment = async (attachment: Attachment) => {
+    if (!projectId) return;
+    try {
+      await semanggi.deleteUpload(projectId, attachment.path);
+    } catch (err) {
+      setUploadError(`${attachment.name}: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    setAttachments((prev) => prev.filter((a) => a.path !== attachment.path));
+    const token = `@${attachment.path}`;
+    setText((prev) => prev.split(`${token} `).join("").split(token).join("").trimEnd());
+  };
+
+  // Staging tmp/uploads/ adalah per-proyek — chip dari proyek lama adalah
+  // tautan ke berkas di workspace lain, dan "×"-nya akan menghapus di proyek
+  // yang salah. TOKEN di teks ikut dibuang, bukan hanya chipnya: token proyek
+  // lama adalah janji berkas yang tak pernah ada di proyek baru (adopsi akan
+  // mencatatnya missing, lalu agen diberi instruksi membaca berkas yang tak
+  // ada). Semua token @tmp/uploads/… disapu — token tanpa chip pun yatim di
+  // proyek berikutnya. Galat unggah ikut dibersihkan: ia milik proyek itu juga.
+  useEffect(() => {
+    setText((prev) => prev.replace(/@tmp\/uploads\/\S+/g, "").replace(/[ \t]{2,}/g, " ").trimEnd());
+    setAttachments([]);
+    setUploadError(null);
+  }, [projectId]);
 
   // No PageShell here (unlike every other Semanggi page): PageShell lays out
   // a normal scrolling document, and a chat composer that has to stay pinned
@@ -575,85 +651,128 @@ export function ControlPage({
               void send(text);
             }}
           >
-            <div className="flex items-end gap-2 rounded-[24px] border border-border bg-card px-3 py-2 shadow-sm focus-within:ring-1 focus-within:ring-ring">
-              <textarea
-                ref={textareaRef}
-                value={text}
-                onChange={(event) => {
-                  setText(event.target.value);
-                  setCaret(event.target.selectionStart ?? event.target.value.length);
-                }}
-                // Kursor bisa pindah tanpa teks berubah (klik, panah, Home) —
-                // dan token yang sedang diketik ditentukan oleh posisinya,
-                // bukan hanya oleh isinya.
-                onSelect={(event) => setCaret((event.target as HTMLTextAreaElement).selectionStart ?? 0)}
-                onKeyDown={(event) => {
-                  // Suggestion keys come first: with the list open, Enter
-                  // COMPLETES rather than sends — otherwise the most common
-                  // flow ("type /, press enter") would send a bare "/" to the
-                  // router and get a CONFIRM back.
-                  if (listOpen) {
-                    if (event.key === "ArrowDown") {
-                      event.preventDefault();
-                      setPickIndex((i) => (i + 1) % suggestions.length);
-                      return;
+            <div className="rounded-[24px] border border-border bg-card px-3 py-2 shadow-sm focus-within:ring-1 focus-within:ring-ring">
+              {attachments.length > 0 ? (
+                // Chip DI DALAM kartu composer, bukan di atasnya: mereka bagian
+                // dari pesan yang sedang disusun — ring focus-within kartu ikut
+                // membingkainya. Dua tombol per chip karena dua tujuan berbeda:
+                // nama = buka viewer, "×" = hapus. Hanya basename yang tampil —
+                // jalur penuh (staging) ada di title, sebagaimana file chip di
+                // balasan chat.
+                <div className="mb-2 flex flex-wrap gap-1.5">
+                  {attachments.map((attachment) => (
+                    <span
+                      key={attachment.path}
+                      className="inline-flex items-center gap-0.5 rounded-full border border-border bg-background py-0.5 pl-2 pr-1 text-[11px]"
+                    >
+                      <button
+                        type="button"
+                        onClick={() => viewer.open(attachment.path)}
+                        title={`Open ${attachment.path} in the viewer panel`}
+                        className="inline-flex max-w-[16rem] items-center gap-1 font-mono text-muted-foreground transition-colors hover:text-foreground"
+                      >
+                        <FileText className="h-3 w-3 shrink-0" />
+                        <span className="truncate">{attachment.path.split("/").pop()}</span>
+                      </button>
+                      <button
+                        type="button"
+                        aria-label={`Remove ${attachment.name}`}
+                        title="Remove attachment (deletes the staged file)"
+                        disabled={busy || uploading}
+                        onClick={() => void removeAttachment(attachment)}
+                        className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+                      >
+                        <X className="h-2.5 w-2.5" />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+              <div className="flex items-end gap-2">
+                <textarea
+                  ref={textareaRef}
+                  value={text}
+                  onChange={(event) => {
+                    setText(event.target.value);
+                    setCaret(event.target.selectionStart ?? event.target.value.length);
+                  }}
+                  // Kursor bisa pindah tanpa teks berubah (klik, panah, Home) —
+                  // dan token yang sedang diketik ditentukan oleh posisinya,
+                  // bukan hanya oleh isinya.
+                  onSelect={(event) => setCaret((event.target as HTMLTextAreaElement).selectionStart ?? 0)}
+                  onKeyDown={(event) => {
+                    // Suggestion keys come first: with the list open, Enter
+                    // COMPLETES rather than sends — otherwise the most common
+                    // flow ("type /, press enter") would send a bare "/" to the
+                    // router and get a CONFIRM back.
+                    if (listOpen) {
+                      if (event.key === "ArrowDown") {
+                        event.preventDefault();
+                        setPickIndex((i) => (i + 1) % suggestions.length);
+                        return;
+                      }
+                      if (event.key === "ArrowUp") {
+                        event.preventDefault();
+                        setPickIndex((i) => (i - 1 + suggestions.length) % suggestions.length);
+                        return;
+                      }
+                      if (event.key === "Enter" || event.key === "Tab") {
+                        event.preventDefault();
+                        applySuggestion(suggestions[pickIndex].value);
+                        return;
+                      }
+                      if (event.key === "Escape") {
+                        event.preventDefault();
+                        // Ditandai per TOKEN, bukan sebagai satu bendera: menutup
+                        // daftar untuk "@doc" tidak boleh membungkam daftar
+                        // berikutnya yang muncul untuk "TASK-".
+                        setDismissed(token ? `${token.kind}:${token.token}` : null);
+                        return;
+                      }
                     }
-                    if (event.key === "ArrowUp") {
+                    // Enter sends, Shift+Enter inserts a newline — work requests are
+                    // often multi-line, and forcing a single line makes people
+                    // shorten the request until it loses an important requirement.
+                    if (event.key === "Enter" && !event.shiftKey) {
                       event.preventDefault();
-                      setPickIndex((i) => (i - 1 + suggestions.length) % suggestions.length);
-                      return;
+                      void send(text);
                     }
-                    if (event.key === "Enter" || event.key === "Tab") {
-                      event.preventDefault();
-                      applySuggestion(suggestions[pickIndex].value);
-                      return;
-                    }
-                    if (event.key === "Escape") {
-                      event.preventDefault();
-                      // Ditandai per TOKEN, bukan sebagai satu bendera: menutup
-                      // daftar untuk "@doc" tidak boleh membungkam daftar
-                      // berikutnya yang muncul untuk "TASK-".
-                      setDismissed(token ? `${token.kind}:${token.token}` : null);
-                      return;
-                    }
-                  }
-                  // Enter sends, Shift+Enter inserts a newline — work requests are
-                  // often multi-line, and forcing a single line makes people
-                  // shorten the request until it loses an important requirement.
-                  if (event.key === "Enter" && !event.shiftKey) {
-                    event.preventDefault();
-                    void send(text);
-                  }
-                }}
-                rows={MIN_ROWS}
-                placeholder="Message Semanggi…"
-                className="max-h-[200px] flex-1 resize-none border-0 bg-transparent px-1 py-1.5 text-sm outline-none focus:ring-0 placeholder:text-muted-foreground"
-              />
-              <input
-                ref={fileInputRef}
-                type="file"
-                multiple
-                hidden
-                onChange={(event) => void uploadFiles(event.target.files)}
-              />
-              <button
-                type="button"
-                aria-label="Attach files"
-                title="Attach files (uploaded to tmp/uploads/, deleted after the task loads them)"
-                disabled={busy || uploading || !projectId}
-                onClick={() => fileInputRef.current?.click()}
-                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-opacity hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                {uploading ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Paperclip className="h-4 w-4" />}
-              </button>
-              <button
-                type="submit"
-                aria-label="Send"
-                disabled={busy || text.trim().length === 0}
-                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground transition-opacity disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                {busy ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <SendHorizontal className="h-4 w-4" />}
-              </button>
+                  }}
+                  rows={MIN_ROWS}
+                  placeholder="Message Semanggi…"
+                  className="max-h-[200px] flex-1 resize-none border-0 bg-transparent px-1 py-1.5 text-sm outline-none focus:ring-0 placeholder:text-muted-foreground"
+                />
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  multiple
+                  // D77: dialog pemilih berkas hanya menawarkan teks — penolakan
+                  // paling murah adalah berkas yang tak pernah bisa dipilih.
+                  // Pemeriksaan isTextUploadName tetap ada: accept hanyalah
+                  // saran bagi dialog, bukan pagar.
+                  accept={TEXT_UPLOAD_ACCEPT}
+                  hidden
+                  onChange={(event) => void uploadFiles(event.target.files)}
+                />
+                <button
+                  type="button"
+                  aria-label="Attach text files"
+                  title="Attach text files (md, txt, json, …) — staged in tmp/uploads/, adopted into the task's deliverables/ on send, deleted after the task loads them"
+                  disabled={busy || uploading || !projectId}
+                  onClick={() => fileInputRef.current?.click()}
+                  className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-opacity hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {uploading ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Paperclip className="h-4 w-4" />}
+                </button>
+                <button
+                  type="submit"
+                  aria-label="Send"
+                  disabled={busy || text.trim().length === 0}
+                  className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground transition-opacity disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {busy ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <SendHorizontal className="h-4 w-4" />}
+                </button>
+              </div>
             </div>
           </form>
         </div>

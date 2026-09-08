@@ -2237,7 +2237,8 @@ export class NativeWsOpenClawGatewayClient implements OpenClawGatewayClient {
       );
       const config = cloneJsonObject(isObjectRecord(snapshot.config) ? snapshot.config : {});
       const currentValue = readConfigPath(config, path);
-      const mustPersistAgentRegistry = operation === "config.set" && path === "agents.list";
+      const mustPersistAgentRegistry = operation === "config.set" &&
+        (path === "agents.list" || path === "agents.entries");
 
       if (
         !mustPersistAgentRegistry && (
@@ -2286,6 +2287,8 @@ export class NativeWsOpenClawGatewayClient implements OpenClawGatewayClient {
 
       if (path === "agents.list") {
         patchParams.replacePaths = ["agents.list[].skills"];
+      } else if (path === "agents.entries") {
+        patchParams.replacePaths = ["agents.entries.*.skills"];
       }
 
       if (baseHash) {

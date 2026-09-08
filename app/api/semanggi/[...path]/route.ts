@@ -78,9 +78,12 @@ const ALLOWED: Array<{ method: string; pattern: RegExp }> = [
   { method: "GET", pattern: /^work\/projects\/[A-Za-z0-9_-]+\/files$/ },
   { method: "GET", pattern: /^work\/projects\/[A-Za-z0-9_-]+\/file$/ },
   { method: "PUT", pattern: /^work\/projects\/[A-Za-z0-9_-]+\/file$/ },
-  // D76 — lampiran operator. Body BYTES MENTAH (lihat forwardBinary); nama
-  // berkas dikirim sebagai query param, alasan yang sama dengan file?path=.
+  // D76/D77 — lampiran operator. Body POST BYTES MENTAH (lihat forwardBinary);
+  // nama berkas dikirim sebagai query param, alasan yang sama dengan file?path=.
+  // DELETE adalah tombol "×" chip lampiran — staging saja; path-nya juga query
+  // param karena mengandung "/".
   { method: "POST", pattern: /^work\/projects\/[A-Za-z0-9_-]+\/uploads$/ },
+  { method: "DELETE", pattern: /^work\/projects\/[A-Za-z0-9_-]+\/uploads$/ },
   { method: "GET", pattern: /^work\/gateway\/(models|thinking-levels)$/ },
   { method: "GET", pattern: /^work\/quota-drivers$/ },
   // Model Map (D66): the join read plus its two write paths. PATCH identifies
@@ -96,6 +99,12 @@ const ALLOWED: Array<{ method: string; pattern: RegExp }> = [
   // here, so the form had no way to reach it.
   { method: "DELETE", pattern: /^work\/model-map$/ },
   { method: "DELETE", pattern: /^work\/brains\/[A-Za-z0-9_-]+$/ },
+  // Process Manager (D78): list/create/kill the brain's gateway sandboxes.
+  // "kill" is POST with {agentId} in the body — the agent id can contain
+  // characters a catch-all path segment should not carry.
+  { method: "GET", pattern: /^work\/brains\/[A-Za-z0-9_-]+\/sandboxes$/ },
+  { method: "POST", pattern: /^work\/brains\/[A-Za-z0-9_-]+\/sandboxes$/ },
+  { method: "POST", pattern: /^work\/brains\/[A-Za-z0-9_-]+\/sandboxes\/kill$/ },
   { method: "POST", pattern: /^work\/gateway\/models\/refresh$/ },
   { method: "POST", pattern: /^work\/gateway\/thinking-levels\/refresh$/ },
   { method: "POST", pattern: /^work\/gateway\/thinking-levels\/probe$/ },

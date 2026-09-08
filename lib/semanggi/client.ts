@@ -398,6 +398,21 @@ export type BrainTestResult = {
   error?: string;
 };
 
+/** One row of the Process Manager (D78): a gateway agent bound to this
+ *  brain's model plus its sandbox workspace. projectId/taskId attribute the
+ *  sandbox to the task currently (or last) running there — null for a fresh
+ *  probe; RUNNING means a DISPATCHED/RUNNING task occupies it and kill is
+ *  refused server-side. */
+export type BrainSandbox = {
+  agentId: string;
+  name: string;
+  workspace: string | null;
+  status: "RUNNING" | "IDLE";
+  projectId: string | null;
+  taskId: string | null;
+  probe: boolean;
+};
+
 export type PlanStep = {
   role: string;
   label: string;
@@ -501,10 +516,10 @@ export const semanggi = {
     call<{ events: WorkEvent[] }>("GET", `work/events?subject=${encodeURIComponent(subject)}&limit=${limit}`),
   transcript: (id: string) => call<{ taskId: string; turns: TranscriptTurn[] }>("GET", `work/tasks/${id}/transcript`),
 
-  // Lampiran operator (D76) — bytes MENTAH, bukan JSON: fetch() dengan body
-  // Buffer/ArrayBuffer menjaga berkas biner utuh melintasi proxy (yang kini
-  // meneruskan content-type octet-stream apa adanya). Satu berkas per panggilan;
-  // multi-file diulang oleh pemanggil supaya kegagalan per berkas terlapor per berkas.
+  // Lampiran operator (D76/D77) — bytes MENTAH, bukan JSON: fetch() dengan body
+  // Buffer/ArrayBuffer menjaga berkas utuh melintasi proxy (yang meneruskan
+  // content-type octet-stream apa adanya). Satu berkas per panggilan; multi-file
+  // diulang oleh pemanggil supaya kegagalan per berkas terlapor per berkas.
   upload: async (projectId: string, name: string, bytes: ArrayBuffer | Blob | File) => {
     const res = await fetch(`/api/semanggi/work/projects/${projectId}/uploads?name=${encodeURIComponent(name)}`, {
       method: "POST",
@@ -525,6 +540,13 @@ export const semanggi = {
     }
     return parsed as { ok: true; path: string; size: number };
   },
+  // Tombol "×" pada chip lampiran (D77). Hanya staging tmp/uploads/ yang bisa
+  // dihapus — salinan per-task sudah milik task yang mengadopsinya.
+  deleteUpload: (projectId: string, path: string) =>
+    call<{ ok: true; path: string }>(
+      "DELETE",
+      `work/projects/${projectId}/uploads?path=${encodeURIComponent(path)}`,
+    ),
 
   start: (id: string) => call<{ task: Task }>("POST", `work/tasks/${id}/start`, {}),
   stop: (id: string, reason?: string) => call<{ task: Task }>("POST", `work/tasks/${id}/stop`, { reason }),
@@ -603,6 +625,28 @@ export const semanggi = {
   // agent (routing.json), never matched by model like every other provider.
   testBrainDraft: (draft: { provider: string; model: string; thinking?: string | null; effortMode?: EffortMode; acpAgent?: string | null }) =>
     call<BrainTestResult>("POST", "work/brains/test", draft),
+  // --- Process Manager (D78) -------------------------------------------------
+  // A "sandbox" is the gateway agent + its workspace. The list is
+  // agent-centric: that is the thing Test Connection mutates (auto-provisioned
+  // probe agents appear here) and the thing Create/Kill operate on.
+  brainSandboxes: (id: string) => call<{ brain: { id: string; name: string; provider: string; model: string }; sandboxes: BrainSandbox[] }>(
+    "GET",
+    `work/brains/${id}/sandboxes`,
+  ),
+  createBrainSandbox: (id: string, spec: { name: string; workspace?: string }) =>
+    call<{ sandbox: { agentId: string; name: string; workspace: string; model: string }; status: string }>(
+      "POST",
+      `work/brains/${id}/sandboxes`,
+      spec,
+    ),
+  // Kill is refused server-side (409) for a sandbox running a task — the rule
+  // lives there, the UI only hides the button (D67 pattern).
+  killBrainSandbox: (id: string, agentId: string) =>
+    call<{ killed: boolean; agentId: string; removedBindings: number }>(
+      "POST",
+      `work/brains/${id}/sandboxes/kill`,
+      { agentId },
+    ),
   // Cached list (fast, no live gateway call). refreshGatewayModels() below is
   // the one that actually asks the gateway and persists the answer here.
   gatewayModels: () => call<{ models: GatewayModel[] }>("GET", "work/gateway/models"),

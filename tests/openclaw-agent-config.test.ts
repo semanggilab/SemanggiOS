@@ -25,6 +25,9 @@ test("agent config upsert preserves omitted fields while updating identity and m
 
   setOpenClawAdapterForTesting({
     async getConfig(pathName: string) {
+      if (pathName === "agents.entries") {
+        return null;
+      }
       assert.equal(pathName, "agents.list");
       return config;
     },
@@ -63,6 +66,44 @@ test("agent config upsert preserves omitted fields while updating identity and m
     name: "Agent Prime",
     theme: "violet"
   });
+});
+
+test("agent config reads and writes the OpenClaw 2026.8.2 agents.entries registry", async () => {
+  let entries: Record<string, Record<string, unknown>> = {
+    "agent-1": {
+      workspace: "/workspace",
+      name: "Agent One",
+      model: "openai/old",
+      skills: ["read", "write"]
+    }
+  };
+  const writes: Array<{ pathName: string; value: unknown }> = [];
+
+  setOpenClawAdapterForTesting({
+    async getConfig(pathName: string) {
+      assert.equal(pathName, "agents.entries");
+      return entries;
+    },
+    async setConfig(pathName: string, value: unknown) {
+      writes.push({ pathName, value });
+      entries = value as Record<string, Record<string, unknown>>;
+      return { stdout: "", stderr: "" };
+    }
+  } as unknown as OpenClawAdapter);
+
+  await upsertAgentConfigEntry("agent-1", "/workspace", { model: "openai/new" });
+
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0]?.pathName, "agents.entries");
+  assert.deepEqual(writes[0]?.value, {
+    "agent-1": {
+      workspace: "/workspace",
+      name: "Agent One",
+      model: "openai/new",
+      skills: ["read", "write"]
+    }
+  });
+  assert.equal("id" in entries["agent-1"]!, false);
 });
 
 test("agent config maps only supported Worker Profile runtime fields and preserves unknown tool settings", async () => {

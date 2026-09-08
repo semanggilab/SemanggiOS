@@ -16,14 +16,24 @@
 // logically precedes the combination. Brain Map can't be filled in before
 // Brains exist, and its level has no meaning before Role Map is set.
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { MessageSquare } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Activity,
+  Boxes,
+  LoaderCircle,
+  MessageSquare,
+  MoreHorizontal,
+  Pencil,
+  PowerOff,
+  Trash2,
+} from "lucide-react";
 import {
   semanggi,
   relativeTime,
   type Brain,
   type BrainMap,
   type BrainMapCell,
+  type BrainSandbox,
   type BrainTestResult,
   type CatalogModel,
   type EffortMode,
@@ -532,34 +542,388 @@ function useConnectionTest(run: () => Promise<BrainTestResult>) {
   return { busy, result, trigger };
 }
 
-/**
- * Row action in the Brains table. The result used to print as a truncated
- * line of text under the button, which made every row a different height
- * and still cut off the interesting part of a real error. Now the button
- * only ever says "Test"/"Testing…"; the outcome lives in the message icon
- * next to it — colored to read at a glance (muted until run, green for a
- * pass, amber for a fail) — and the full text is one hover away via the
- * icon's tooltip, exactly where an operator scanning the column would look
- * for "what happened" without it competing for row height.
- */
-function TestConnectionButton({ brainId }: { brainId: string }) {
-  const { busy, result, trigger } = useConnectionTest(() => semanggi.testBrain(brainId));
-
-  const resultColor = !result
+// One tone for every test-result readout (row icon, Process Manager footer,
+// draft-test line). It existed as three hand-copied ternaries once and drifted
+// within a day — same result, different dark-mode shade depending on where it
+// rendered — which is the whole argument for the single copy.
+function testResultColor(result: { ok: boolean } | null) {
+  return !result
     ? "text-muted-foreground/60"
     : result.ok
       ? "text-emerald-600 dark:text-emerald-400"
       : "text-amber-600 dark:text-amber-400";
+}
+
+/**
+ * Row actions in the Brains table (D78): Edit collapsed to a pencil icon, and
+ * everything else that used to sit beside it as a text button — Disable,
+ * Test, Process Manager — lives behind one "3 dots" menu, because the row's
+ * width is spoken for by the facts (quota windows, effort evidence), not by
+ * three verbs. The Test outcome stays next to the menu button as the same
+ * message icon the old inline button used: colored to read at a glance (muted
+ * until run, green pass, amber fail), full text one hover away — never a
+ * truncating line that made every row a different height.
+ */
+function BrainRowActions({
+  brain,
+  busy,
+  onEdit,
+  onToggle,
+  onProcessManager,
+}: {
+  brain: Brain;
+  busy: boolean;
+  onEdit: () => void;
+  onToggle: () => void;
+  onProcessManager: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const { busy: testing, result, trigger } = useConnectionTest(() => semanggi.testBrain(brain.id));
+
+  // mousedown, not click: clicking a menu item would fire this first on the
+  // button itself otherwise (it is outside the root div's button row)… it is
+  // INSIDE rootRef, so the guard is really for clicks anywhere else on the
+  // page — the pattern the composer's suggestion list uses for the same
+  // reason: don't let the closing click also activate what it lands on.
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (event: MouseEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  const itemClass =
+    "flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40";
 
   return (
-    <div className="flex items-center gap-1.5">
-      <Button size="sm" variant="link" className="text-primary" disabled={busy} onClick={trigger}>
-        {busy ? "Testing…" : "Test"}
+    <div ref={rootRef} className="relative flex items-center justify-end gap-1">
+      <Button size="sm" variant="ghost" className="h-7 w-7 p-0 text-primary" disabled={busy} title="Edit this Brain" onClick={onEdit}>
+        <Pencil className="h-3.5 w-3.5" />
       </Button>
-      <span className={resultColor} title={result ? result.message : "Run Test to see the result here"}>
+      <Button
+        size="sm"
+        variant="ghost"
+        className="h-7 w-7 p-0"
+        disabled={busy}
+        title="More actions"
+        aria-label={`More actions for ${brain.name}`}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <MoreHorizontal className="h-4 w-4" />
+      </Button>
+      <span className={testResultColor(result)} title={result ? result.message : "Run Test (in the menu) to see the result here"}>
         <MessageSquare className="h-3.5 w-3.5" />
       </span>
+      {open ? (
+        <div className="absolute right-0 top-8 z-40 w-44 rounded-lg border border-border bg-background py-1 shadow-lg">
+          <button
+            type="button"
+            className={itemClass}
+            disabled={busy}
+            title={brain.enabled ? "Stop routing new work to this Brain" : "Route work to this Brain again"}
+            onClick={() => {
+              setOpen(false);
+              onToggle();
+            }}
+          >
+            <PowerOff className="h-3.5 w-3.5 shrink-0" />
+            {brain.enabled ? "Disable" : "Enable"}
+          </button>
+          <button
+            type="button"
+            className={itemClass}
+            disabled={testing}
+            title="Send one throwaway prompt to a live agent bound to this model"
+            onClick={() => void trigger()}
+          >
+            {testing ? <LoaderCircle className="h-3.5 w-3.5 shrink-0 animate-spin" /> : <Activity className="h-3.5 w-3.5 shrink-0" />}
+            {testing ? "Testing…" : "Test"}
+          </button>
+          <button
+            type="button"
+            className={itemClass}
+            title="List, kill, and create this Brain's gateway sandboxes"
+            onClick={() => {
+              setOpen(false);
+              onProcessManager();
+            }}
+          >
+            <Boxes className="h-3.5 w-3.5 shrink-0" />
+            Process Manager
+          </button>
+        </div>
+      ) : null}
     </div>
+  );
+}
+
+/**
+ * Process Manager (D78): the gateway sandboxes bound to one Brain — one row
+ * per live agent, kill for the idle ones, Test/Create in the footer. "Test"
+ * here IS the connection test: an auto-provisioned probe agent (D65) is a new
+ * sandbox, so the list reloads right after the test answers.
+ */
+function ProcessManagerModal({ brain, onClose }: { brain: Brain; onClose: () => void }) {
+  const [rows, setRows] = useState<BrainSandbox[] | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [killing, setKilling] = useState<string | null>(null);
+  const [createOpen, setCreateOpen] = useState(false);
+  const test = useConnectionTest(() => semanggi.testBrain(brain.id));
+
+  // Reloads can overlap (Test provisions a probe, kill removes a row, the
+  // footer fires another). A monotonic id keeps the LAST-STARTED reload the
+  // winner: an older snapshot resolving late can't resurrect an agent that
+  // was just killed or hide a probe that just appeared.
+  const loadSeq = useRef(0);
+
+  const reload = async () => {
+    const seq = ++loadSeq.current;
+    try {
+      const res = await semanggi.brainSandboxes(brain.id);
+      if (seq !== loadSeq.current) return;
+      setRows(res.sandboxes);
+      setLoadFailed(false);
+    } catch (err) {
+      if (seq !== loadSeq.current) return;
+      setError(err instanceof Error ? err.message : String(err));
+      // Without this, a failed first load leaves rows === null forever and
+      // the list body claims to be loading for the rest of the modal's life.
+      setLoadFailed(true);
+    }
+  };
+
+  useEffect(() => {
+    void reload();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [brain.id]);
+
+  const kill = async (agentId: string) => {
+    setKilling(agentId);
+    setError(null);
+    try {
+      await semanggi.killBrainSandbox(brain.id, agentId);
+      await reload();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setKilling(null);
+    }
+  };
+
+  // The point of running the test FROM here: provisioning is the test's
+  // side-effect, and the list is where the new sandbox becomes visible.
+  const runTest = async () => {
+    await test.trigger();
+    await reload();
+  };
+
+  // Fixed viewport of exactly 8 rows (8 × 36px): the modal's height does not
+  // breathe with the list, so the footer buttons never walk around while an
+  // operator is aiming at one, and anything past 8 scrolls.
+  const GRID = "grid grid-cols-[minmax(0,2.4fr)_minmax(0,1fr)_minmax(0,1fr)_84px_64px] gap-2";
+
+  return (
+    <Modal
+      title={`Process Manager — ${brain.name}`}
+      subtitle={`Gateway sandboxes (agents) bound to ${brain.provider}/${brain.model}. Kill is offered for idle sandboxes only; a running task's sandbox is stopped through its task, not here.`}
+      onClose={onClose}
+      width="max-w-3xl"
+    >
+      {error ? (
+        <div className="mb-2">
+          <Notice tone="warning">{error}</Notice>
+        </div>
+      ) : null}
+      <div className="overflow-hidden rounded-lg border border-border">
+        <div className={`${GRID} border-b border-border bg-muted/50 px-3 py-1.5 text-left text-[11px] font-medium`}>
+          <span>Name</span>
+          <span>Project</span>
+          <span>Task</span>
+          <span>Status</span>
+          <span />
+        </div>
+        <div className="h-72 overflow-y-auto">
+          {rows === null && !loadFailed ? (
+            <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
+              <LoaderCircle className="mr-2 h-4 w-4 animate-spin" /> Loading sandboxes…
+            </div>
+          ) : loadFailed && rows === null ? (
+            <div className="flex h-full flex-col items-center justify-center gap-2 px-3 text-center text-xs text-muted-foreground">
+              Could not load sandboxes{error ? ` — ${error}` : ""}.
+              <Button size="sm" variant="outline" onClick={() => void reload()}>
+                Retry
+              </Button>
+            </div>
+          ) : rows.length === 0 ? (
+            <div className="flex h-full items-center justify-center px-3 text-center text-xs text-muted-foreground">
+              No live sandbox for this Brain yet — Test Connection provisions a probe agent, Create adds an empty one.
+            </div>
+          ) : (
+            rows.map((sandbox) => (
+              <div
+                key={sandbox.agentId}
+                className={`${GRID} items-center border-b border-border/60 px-3 py-1.5 text-xs last:border-b-0`}
+              >
+                <span className="truncate font-mono" title={sandbox.workspace ? `workspace: ${sandbox.workspace}` : sandbox.agentId}>
+                  {sandbox.name}
+                  {sandbox.probe ? <span className="ml-1 text-[10px] text-muted-foreground">probe</span> : null}
+                </span>
+                <span className="truncate text-muted-foreground" title={sandbox.projectId ?? undefined}>
+                  {sandbox.projectId ?? "—"}
+                </span>
+                <span className="truncate text-muted-foreground" title={sandbox.taskId ?? undefined}>
+                  {sandbox.taskId ?? "—"}
+                </span>
+                <span>
+                  <Badge tone={sandbox.status === "RUNNING" ? "info" : "neutral"}>{sandbox.status}</Badge>
+                </span>
+                <span className="flex justify-end">
+                  {/* Kill hidden for RUNNING (not merely disabled): the rule
+                      lives on the server (D67 pattern), and a disabled button
+                      would still whisper "someday" at a sandbox that must be
+                      stopped through its task. */}
+                  {sandbox.status === "IDLE" ? (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-7 w-7 p-0 text-destructive"
+                      disabled={killing !== null || test.busy}
+                      title="Kill this sandbox (agents.delete at the gateway)"
+                      aria-label={`Kill ${sandbox.name}`}
+                      onClick={() => void kill(sandbox.agentId)}
+                    >
+                      {killing === sandbox.agentId ? (
+                        <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Trash2 className="h-3.5 w-3.5" />
+                      )}
+                    </Button>
+                  ) : null}
+                </span>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+      <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3">
+        <span className="min-w-0 flex-1 truncate text-[11px]">
+          {test.result ? (
+            <span className={testResultColor(test.result)}>
+              {test.result.message}
+            </span>
+          ) : (
+            <span className="text-muted-foreground">
+              Test Connection also provisions a probe agent when none exists — the list refreshes right after.
+            </span>
+          )}
+        </span>
+        <div className="flex shrink-0 items-center gap-2">
+          <Button size="sm" variant="outline" disabled={test.busy || createOpen} onClick={() => void runTest()}>
+            {test.busy ? "Testing…" : "Test"}
+          </Button>
+          <Button size="sm" disabled={test.busy || createOpen} onClick={() => setCreateOpen(true)}>
+            Create
+          </Button>
+        </div>
+      </div>
+      {createOpen ? (
+        <CreateSandboxModal
+          brain={brain}
+          onClose={() => setCreateOpen(false)}
+          onCreated={async () => {
+            setCreateOpen(false);
+            await reload();
+          }}
+        />
+      ) : null}
+    </Modal>
+  );
+}
+
+/**
+ * The small spec sheet stacked ON TOP of the Process Manager (D78): name and
+ * workspace for the empty sandbox. The model is not a field — it IS the
+ * Brain; letting the operator retype it here would create a sandbox this
+ * Brain's own list would not match.
+ */
+function CreateSandboxModal({
+  brain,
+  onClose,
+  onCreated,
+}: {
+  brain: Brain;
+  onClose: () => void;
+  onCreated: () => Promise<void>;
+}) {
+  const [name, setName] = useState("");
+  const [workspace, setWorkspace] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const submit = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await semanggi.createBrainSandbox(brain.id, { name, workspace: workspace.trim() || undefined });
+      await onCreated();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal
+      title={`Create sandbox — ${brain.name}`}
+      subtitle={`An empty gateway sandbox bound to ${brain.provider}/${brain.model}.`}
+      onClose={onClose}
+      width="max-w-md"
+    >
+      <div className="space-y-3">
+        <Field
+          label="Name"
+          hint='Must start with "semanggi-" or "sem-" — that prefix is the measured origin discriminator; without it the sandbox escapes Semanggi\'s fleet hygiene.'
+        >
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="semanggi-box-1"
+            className="h-8 w-full rounded-md border border-border bg-background px-2 font-mono text-xs outline-none focus:ring-1 focus:ring-ring"
+          />
+        </Field>
+        <Field
+          label="Workspace (optional)"
+          hint="Absolute path — blank uses the controller's default probe root for this provider."
+        >
+          <input
+            value={workspace}
+            onChange={(e) => setWorkspace(e.target.value)}
+            placeholder="/opt/…/workspaces/probe/<provider>-<name>"
+            className="h-8 w-full rounded-md border border-border bg-background px-2 font-mono text-xs outline-none focus:ring-1 focus:ring-ring"
+          />
+        </Field>
+        {error ? <Notice tone="warning">{error}</Notice> : null}
+        <div className="flex justify-end gap-2 border-t border-border pt-3">
+          <Button size="sm" variant="outline" disabled={busy} onClick={onClose}>
+            Cancel
+          </Button>
+          <Button size="sm" disabled={busy || !name.trim()} onClick={() => void submit()}>
+            {busy ? "Creating…" : "Create"}
+          </Button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
@@ -601,9 +965,7 @@ function TestDraftConnectionButton({
         {busy ? "Testing…" : "Test Connection"}
       </Button>
       {result ? (
-        <span
-          className={`text-[11px] ${result.ok ? "text-emerald-600 dark:text-emerald-300" : "text-amber-600 dark:text-amber-300"}`}
-        >
+        <span className={`text-[11px] ${testResultColor(result)}`}>
           {result.message}
         </span>
       ) : null}
@@ -1185,6 +1547,7 @@ export function SemanggiBrainsPanel() {
   const [thinkingLevels, setThinkingLevels] = useState<ThinkingLevelEntry[]>([]);
   const [busy, setBusy] = useState(false);
   const [modal, setModal] = useState<{ mode: "create" | "edit"; brain: Brain | null } | null>(null);
+  const [processManager, setProcessManager] = useState<Brain | null>(null);
   // D67: the delete gate needs to know what still routes through each brain —
   // explicit Brain Map pins (by id) and the default grid (by slug name, a
   // code constant the server cannot un-pin for you). Best-effort: if the map
@@ -1434,15 +1797,13 @@ export function SemanggiBrainsPanel() {
                       )}
                     </td>
                     <td className="px-2 py-1">
-                      <div className="flex items-center justify-end gap-2">
-                        <Button size="sm" variant="link" className="text-primary" disabled={busy} onClick={() => setModal({ mode: "edit", brain })}>
-                          Edit
-                        </Button>
-                        <Button size="sm" variant="link" className="text-primary" disabled={busy} onClick={() => toggle(brain)}>
-                          {brain.enabled ? "Disable" : "Enable"}
-                        </Button>
-                        <TestConnectionButton brainId={brain.id} />
-                      </div>
+                      <BrainRowActions
+                        brain={brain}
+                        busy={busy}
+                        onEdit={() => setModal({ mode: "edit", brain })}
+                        onToggle={() => toggle(brain)}
+                        onProcessManager={() => setProcessManager(brain)}
+                      />
                     </td>
                   </tr>
                 ))}
@@ -1469,6 +1830,8 @@ export function SemanggiBrainsPanel() {
           onDelete={modal.mode === "edit" ? () => removeBrain(modal.brain!) : undefined}
         />
       ) : null}
+
+      {processManager ? <ProcessManagerModal brain={processManager} onClose={() => setProcessManager(null)} /> : null}
     </div>
   );
 }

@@ -53,6 +53,22 @@ export type MutableAgentConfigEntry = {
   default?: boolean;
 } & Record<string, unknown>;
 
+type MutableAgentConfigEntries = Record<string, Omit<MutableAgentConfigEntry, "id">>;
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+export function mapAgentConfigEntriesToList(entries: MutableAgentConfigEntries): MutableAgentConfigEntry[] {
+  return Object.entries(entries).flatMap(([id, entry]) =>
+    isObjectRecord(entry) ? [{ ...entry, id } as MutableAgentConfigEntry] : []
+  );
+}
+
+export function mapAgentConfigListToEntries(configList: MutableAgentConfigEntry[]): MutableAgentConfigEntries {
+  return Object.fromEntries(configList.map(({ id, ...entry }) => [id, entry]));
+}
+
 function normalizeOptionalValue(value: string | null | undefined) {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
@@ -138,8 +154,22 @@ export async function readAgentConfigList(
   snapshot?: MissionControlSnapshot,
   options: OpenClawCommandOptions = {}
 ) {
+  const adapter = getOpenClawAdapter();
+
   try {
-    const config = await getOpenClawAdapter().getConfig<MutableAgentConfigEntry[]>("agents.list", options);
+    const entries = await adapter.getConfig<MutableAgentConfigEntries>("agents.entries", options);
+
+    if (isObjectRecord(entries)) {
+      return mapAgentConfigEntriesToList(entries as MutableAgentConfigEntries);
+    }
+  } catch (error) {
+    if (!isMissingAgentConfigPathError(error, "agents.entries")) {
+      throw error;
+    }
+  }
+
+  try {
+    const config = await adapter.getConfig<MutableAgentConfigEntry[]>("agents.list", options);
 
     if (Array.isArray(config)) {
       return config;
@@ -159,7 +189,25 @@ export async function writeAgentConfigList(
   configList: MutableAgentConfigEntry[],
   options: OpenClawCommandOptions = {}
 ) {
-  await getOpenClawAdapter().setConfig("agents.list", configList, { ...options, strictJson: true });
+  const adapter = getOpenClawAdapter();
+
+  try {
+    const entries = await adapter.getConfig<MutableAgentConfigEntries>("agents.entries", options);
+
+    if (isObjectRecord(entries)) {
+      await adapter.setConfig("agents.entries", mapAgentConfigListToEntries(configList), {
+        ...options,
+        strictJson: true
+      });
+      return;
+    }
+  } catch (error) {
+    if (!isMissingAgentConfigPathError(error, "agents.entries")) {
+      throw error;
+    }
+  }
+
+  await adapter.setConfig("agents.list", configList, { ...options, strictJson: true });
 }
 
 export async function upsertAgentConfigEntry(
@@ -583,8 +631,12 @@ function buildAgentConfigListFromSnapshot(snapshot: MissionControlSnapshot) {
 }
 
 function isMissingAgentConfigListError(error: unknown) {
+  return isMissingAgentConfigPathError(error, "agents.list");
+}
+
+function isMissingAgentConfigPathError(error: unknown, pathName: string) {
   const message = extractErrorMessage(error);
-  return /Config path not found:\s*agents\.list|Config path not found:\s*agents\.list/i.test(message);
+  return message.toLowerCase().includes(`config path not found: ${pathName}`.toLowerCase());
 }
 
 function jsonValuesEqual(left: unknown, right: unknown) {

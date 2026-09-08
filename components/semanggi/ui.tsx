@@ -322,6 +322,14 @@ export function CopyButton({
  * dialog through the same shape would couple two things that change for
  * different reasons.
  */
+// Modals stack (D78's Process Manager opens a Create-spec modal ON TOP of
+// itself): without bookkeeping, ONE Escape closed every layer at once, because
+// each overlay listens on window independently. A mount-ordered stack lets
+// only the topmost modal answer. Overlay clicks need no such guard — the
+// later portal always paints above and takes the pointer event.
+const modalStack: number[] = [];
+let nextModalId = 1;
+
 export function Modal({
   title,
   subtitle,
@@ -341,9 +349,24 @@ export function Modal({
   children: ReactNode;
   width?: string;
 }) {
+  const modalIdRef = useRef(nextModalId++);
+
+  useEffect(() => {
+    modalStack.push(modalIdRef.current);
+    return () => {
+      const index = modalStack.indexOf(modalIdRef.current);
+      if (index >= 0) modalStack.splice(index, 1);
+    };
+  }, []);
+
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      if (event.key !== "Escape") return;
+      // Stacked modals: only the topmost layer answers, so Escape peels one
+      // layer at a time instead of dismissing the whole stack underneath a
+      // form the operator is still filling in.
+      if (modalStack[modalStack.length - 1] !== modalIdRef.current) return;
+      onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);

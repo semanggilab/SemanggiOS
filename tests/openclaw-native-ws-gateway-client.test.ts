@@ -2423,6 +2423,54 @@ test("native WS gateway client persists agents.list even when the Gateway snapsh
   assert.deepEqual(fallback.calls, []);
 });
 
+test("native WS gateway client persists agents.entries with explicit nested skill replacement", async () => {
+  const fallback = new FallbackGatewayClient();
+  const entries = {
+    "agent-1": { workspace: "/workspace", skills: ["read"] }
+  };
+  const { WebSocketImpl, sentFrames } = createFakeWebSocket((socket, frame) => {
+    globalThis.queueMicrotask(() => {
+      socket.emitMessage({
+        type: "res",
+        id: frame.id,
+        ok: true,
+        payload: frame.method === "connect"
+          ? { protocol: 4 }
+          : frame.method === "config.get"
+            ? {
+                exists: true,
+                valid: true,
+                hash: "hash-entries",
+                config: { agents: { entries } }
+              }
+            : { ok: true }
+      });
+    });
+  });
+  const client = new NativeWsOpenClawGatewayClient({
+    fallback,
+    webSocketFactory: WebSocketImpl,
+    url: "ws://127.0.0.1:18789",
+    timeoutMs: 250
+  });
+
+  const result = await client.setConfig("agents.entries", entries, { strictJson: true });
+
+  assert.match(result.stdout, /"appliedVia":"config.patch"/);
+  assert.deepEqual(sentFrames.map((frame) => frame.method), [
+    "connect",
+    "config.get",
+    "config.schema.lookup",
+    "config.patch"
+  ]);
+  assert.deepEqual(sentFrames[3]?.params, {
+    raw: JSON.stringify({ agents: { entries } }),
+    replacePaths: ["agents.entries.*.skills"],
+    baseHash: "hash-entries"
+  });
+  assert.deepEqual(fallback.calls, []);
+});
+
 test("native WS gateway config object replacement removes omitted members with merge-patch tombstones", async () => {
   const fallback = new FallbackGatewayClient();
   const { WebSocketImpl, sentFrames } = createFakeWebSocket((socket, frame) => {
