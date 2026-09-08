@@ -92,6 +92,11 @@ const ALLOWED: Array<{ method: string; pattern: RegExp }> = [
   { method: "GET", pattern: /^work\/model-map$/ },
   { method: "POST", pattern: /^work\/resources$/ },
   { method: "PATCH", pattern: /^work\/resources$/ },
+  // D85: memulihkan sinyal kuota yang tercatat SALAH alamat (harness yang
+  // dirutekan ke agen lain membuat penolakan GLM diparkir pada resource
+  // claude-code). Admin-only di controller; query param, bukan segmen path,
+  // karena model id groq mengandung "/".
+  { method: "POST", pattern: /^work\/resources\/clear-quota$/ },
   { method: "PUT", pattern: /^work\/thinking-levels$/ },
   // D67: row deletion from the Model Map + Brain forms. Same query-param
   // identity rule as PATCH above; the brains delete has existed on the
