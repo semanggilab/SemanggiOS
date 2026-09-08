@@ -893,7 +893,7 @@ function CreateSandboxModal({
       <div className="space-y-3">
         <Field
           label="Name"
-          hint='Must start with "semanggi-" or "sem-" — that prefix is the measured origin discriminator; without it the sandbox escapes Semanggi\'s fleet hygiene.'
+          hint={`Must start with "semanggi-" or "sem-" — that prefix is the measured origin discriminator; without it the sandbox escapes Semanggi's fleet hygiene.`}
         >
           <input
             value={name}
