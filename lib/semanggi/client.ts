@@ -29,6 +29,8 @@ export type Brain = {
   tpm?: number | null;
   tpd?: number | null;
   contextWindowTokens?: number | null;
+  /** D80: minimum live sandboxes kept for this brain (0 = never auto-provisioned). */
+  minSandboxes?: number;
   enabled: boolean;
   availability?: string;
   nextAvailableAt?: number | null;

@@ -488,6 +488,8 @@ type BrainDraft = {
   tpm: string;
   tpd: string;
   contextWindowTokens: string;
+  /** D80 floor — same "no opinion" convention: "" = 0 on create / keep stored on edit. */
+  minSandboxes: string;
 };
 
 const EMPTY_DRAFT: BrainDraft = {
@@ -510,6 +512,7 @@ const EMPTY_DRAFT: BrainDraft = {
   tpm: "",
   tpd: "",
   contextWindowTokens: "",
+  minSandboxes: "",
 };
 
 /**
@@ -1573,6 +1576,22 @@ function BrainFormModal({
             />
           </Field>
 
+          {/* D80: the keeper keeps this many live sandboxes for the brain,
+              capped by the model's concurrency limit. 0 (blank on create)
+              means the fleet is never grown automatically for it. */}
+          <Field
+            label="Minimum sandboxes"
+            hint="Live sandboxes kept for this brain (0 = never auto-provisioned). Capped by the model's concurrency limit; a task waiting on this model also grows one on demand."
+          >
+            <input
+              value={draft.minSandboxes}
+              onChange={(e) => setDraft({ ...draft, minSandboxes: e.target.value })}
+              inputMode="numeric"
+              placeholder="0"
+              className="h-8 rounded-md border border-border bg-background px-2 text-xs outline-none focus:ring-1 focus:ring-ring"
+            />
+          </Field>
+
           <Field label="Description">
             <input
               value={draft.description}
@@ -1790,8 +1809,20 @@ export function SemanggiBrainsPanel() {
           tpm: brain.tpm != null ? String(brain.tpm) : "",
           tpd: brain.tpd != null ? String(brain.tpd) : "",
           contextWindowTokens: brain.contextWindowTokens != null ? String(brain.contextWindowTokens) : "",
+          minSandboxes: brain.minSandboxes != null ? String(brain.minSandboxes) : "",
         }
       : EMPTY_DRAFT;
+
+  // D80: the sandbox floor is a small integer; anything else is a typo that
+  // would make the keeper grow a fleet. Blank means 0 on create / keep
+  // stored on edit — the same "no opinion" convention as the rate fields.
+  const minFloor = (v: string): number => {
+    const n = Number(v);
+    if (!Number.isInteger(n) || n < 0 || n > 99) {
+      throw new Error("minimum sandboxes must be an integer between 0 and 99");
+    }
+    return n;
+  };
 
   const submitCreate = async (draft: BrainDraft) => {
     await semanggi.createBrain({
@@ -1813,6 +1844,7 @@ export function SemanggiBrainsPanel() {
       tpm: draft.tpm ? Number(draft.tpm) : undefined,
       tpd: draft.tpd ? Number(draft.tpd) : undefined,
       contextWindowTokens: draft.contextWindowTokens ? Number(draft.contextWindowTokens) : undefined,
+      minSandboxes: minFloor(draft.minSandboxes),
     });
     await reload();
   };
@@ -1840,6 +1872,9 @@ export function SemanggiBrainsPanel() {
       tpm: draft.tpm ? Number(draft.tpm) : undefined,
       tpd: draft.tpd ? Number(draft.tpd) : undefined,
       contextWindowTokens: draft.contextWindowTokens ? Number(draft.contextWindowTokens) : undefined,
+      // D80 floor on edit: blank keeps the stored value; there is no "clear"
+      // state because 0 IS the "no floor" state.
+      minSandboxes: draft.minSandboxes === "" ? undefined : minFloor(draft.minSandboxes),
     });
     await reload();
   };
