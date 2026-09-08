@@ -713,14 +713,19 @@ function ProcessManagerModal({ target, models, onClose }: { target: PmTarget; mo
 
   const reload = async () => {
     const seq = ++loadSeq.current;
+    // Branch on the FETCH, not on `brain` afterwards: the two responses have
+    // different shapes, and TypeScript cannot narrow one const's union type
+    // through another const's truthiness.
+    let sandboxes: FleetSandbox[];
     try {
-      const res = brain
-        ? await semanggi.brainSandboxes(brain.id)
-        : await semanggi.sandboxesOverview(target.kind === "fleet" ? target.status : undefined);
+      if (brain) {
+        const res = await semanggi.brainSandboxes(brain.id);
+        sandboxes = res.sandboxes.map((s) => ({ ...s, brainId: brain.id, brainName: brain.name }));
+      } else {
+        const res = await semanggi.sandboxesOverview(fleetStatus ?? undefined);
+        sandboxes = res.sandboxes;
+      }
       if (seq !== loadSeq.current) return;
-      const sandboxes: FleetSandbox[] = brain
-        ? res.sandboxes.map((s) => ({ ...s, brainId: brain.id, brainName: brain.name }))
-        : res.sandboxes;
       setRows(sandboxes);
       setLoadFailed(false);
     } catch (err) {
