@@ -24,6 +24,7 @@
 // language is worth matching, the code isn't worth coupling to.
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { ArrowDown, ChevronRight, RefreshCw, X } from "lucide-react";
 import {
   semanggi,
@@ -38,7 +39,7 @@ import {
   type TranscriptTurn,
   type WorkEvent,
 } from "@/lib/semanggi/client";
-import { Badge, Button, Card, CopyButton, Empty, Field, LoadError, Notice, Select, statusTone } from "./ui";
+import { Badge, Button, Card, CopyButton, Empty, Field, LoadError, Notice, Select, statusTone, useModalLayer } from "./ui";
 
 const FINISHED_STATUSES = new Set(["COMPLETE", "CANCELLED"]);
 
@@ -121,15 +122,13 @@ export function TaskDialog({
   // fully back out matches what the panel's own visual layering already
   // implies (it sits on top), and a single Escape swallowing both would
   // discard the side panel's content the operator may still be reading.
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      if (sidePanel) setSidePanel(null);
-      else onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose, sidePanel]);
+  // Registered through useModalLayer (D79): this dialog now opens ON TOP of
+  // the Process Manager, and an unstacked listener would answer Escape at the
+  // same time as the layer beneath it.
+  useModalLayer(() => {
+    if (sidePanel) setSidePanel(null);
+    else onClose();
+  });
 
   const act = async (fn: () => Promise<unknown>) => {
     setBusy(true);
@@ -154,9 +153,17 @@ export function TaskDialog({
   // streams the reader has to correlate by hand.
   const pairedTurns = useMemo(() => pairToolResults(turns), [turns]);
 
-  return (
+  // Portaled + z-[70] (D79) for the same reason ui.tsx's Modal portals: the
+  // Mission Control shell caps inline overlays at its own stacking context,
+  // and a Process Manager modal (portaled, z-[70]) beneath this dialog would
+  // otherwise paint ABOVE it. SSR guard mirrors Modal's.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+  if (!mounted) return null;
+
+  return createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/70 p-3 backdrop-blur-lg sm:p-6"
+      className="fixed inset-0 z-[70] flex items-center justify-center overflow-y-auto bg-black/70 p-3 backdrop-blur-lg sm:p-6"
       onClick={onClose}
     >
       <div
@@ -314,7 +321,8 @@ export function TaskDialog({
 
         <DetailSidePanel panel={sidePanel} turns={pairedTurns} onClose={() => setSidePanel(null)} onRefresh={loadTranscript} />
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 

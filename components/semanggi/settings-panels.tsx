@@ -16,7 +16,7 @@
 // logically precedes the combination. Brain Map can't be filled in before
 // Brains exist, and its level has no meaning before Role Map is set.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Activity,
   Boxes,
@@ -33,10 +33,10 @@ import {
   type Brain,
   type BrainMap,
   type BrainMapCell,
-  type BrainSandbox,
   type BrainTestResult,
   type CatalogModel,
   type EffortMode,
+  type FleetSandbox,
   type GatewayModel,
   type Level,
   type ModelMapRow,
@@ -47,7 +47,8 @@ import {
   type ThinkingProbeSample,
   type ThinkingProbeStatus,
 } from "@/lib/semanggi/client";
-import { Badge, Button, Card, Combobox, Empty, Field, LoadError, Modal, Notice, Select } from "./ui";
+import { TaskDialog } from "./task-dialog";
+import { Badge, Button, Card, Combobox, CopyButton, Empty, Field, LoadError, Modal, Notice, Select } from "./ui";
 
 const LEVELS: Level[] = ["low", "normal", "critical"];
 const PROFILES: Profile[] = ["fast", "balanced", "quality"];
@@ -673,13 +674,36 @@ function BrainRowActions({
  * here IS the connection test: an auto-provisioned probe agent (D65) is a new
  * sandbox, so the list reloads right after the test answers.
  */
-function ProcessManagerModal({ brain, onClose }: { brain: Brain; onClose: () => void }) {
-  const [rows, setRows] = useState<BrainSandbox[] | null>(null);
+type PmTarget = { kind: "brain"; brain: Brain } | { kind: "fleet"; status: "RUNNING" | "IDLE" };
+
+/**
+ * Process Manager (D78, widened in D79): the gateway sandboxes bound to one
+ * Brain, or the whole fleet filtered by status (the status card's Running /
+ * Idle tiles open this). One row per live agent, kill for the idle ones; in
+ * brain mode Test/Create sit in the footer — "Test" IS the connection test,
+ * an auto-provisioned probe agent (D65) is a new sandbox, so the list
+ * reloads right after the test answers. Rows are normalized to FleetSandbox
+ * (brain rows get their brain stamped on) so both modes share one renderer,
+ * and Name / Task id are clickable: agent facts vs. the task's own detail.
+ */
+function ProcessManagerModal({ target, models, onClose }: { target: PmTarget; models: CatalogModel[]; onClose: () => void }) {
+  const brain = target.kind === "brain" ? target.brain : null;
+  // Narrowed once: TS cannot know `brain === null` implies the fleet variant,
+  // so every fleet-only read below goes through this constant instead of
+  // reaching back into the union.
+  const fleetStatus = target.kind === "fleet" ? target.status : null;
+  const [rows, setRows] = useState<FleetSandbox[] | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [killing, setKilling] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
-  const test = useConnectionTest(() => semanggi.testBrain(brain.id));
+  const [agentDetail, setAgentDetail] = useState<FleetSandbox | null>(null);
+  const [taskDetail, setTaskDetail] = useState<string | null>(null);
+  // The test hook must exist in both modes (hooks don't branch); fleet mode
+  // simply never renders anything that reads it.
+  const test = useConnectionTest(() =>
+    brain ? semanggi.testBrain(brain.id) : Promise.resolve({ ok: true } as BrainTestResult),
+  );
 
   // Reloads can overlap (Test provisions a probe, kill removes a row, the
   // footer fires another). A monotonic id keeps the LAST-STARTED reload the
@@ -690,9 +714,14 @@ function ProcessManagerModal({ brain, onClose }: { brain: Brain; onClose: () => 
   const reload = async () => {
     const seq = ++loadSeq.current;
     try {
-      const res = await semanggi.brainSandboxes(brain.id);
+      const res = brain
+        ? await semanggi.brainSandboxes(brain.id)
+        : await semanggi.sandboxesOverview(target.kind === "fleet" ? target.status : undefined);
       if (seq !== loadSeq.current) return;
-      setRows(res.sandboxes);
+      const sandboxes: FleetSandbox[] = brain
+        ? res.sandboxes.map((s) => ({ ...s, brainId: brain.id, brainName: brain.name }))
+        : res.sandboxes;
+      setRows(sandboxes);
       setLoadFailed(false);
     } catch (err) {
       if (seq !== loadSeq.current) return;
@@ -703,16 +732,17 @@ function ProcessManagerModal({ brain, onClose }: { brain: Brain; onClose: () => 
     }
   };
 
+  const targetKey = target.kind === "brain" ? `brain:${target.brain.id}` : `fleet:${target.status}`;
   useEffect(() => {
     void reload();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [brain.id]);
+  }, [targetKey]);
 
-  const kill = async (agentId: string) => {
-    setKilling(agentId);
+  const kill = async (row: FleetSandbox) => {
+    setKilling(row.agentId);
     setError(null);
     try {
-      await semanggi.killBrainSandbox(brain.id, agentId);
+      await semanggi.killBrainSandbox(row.brainId, row.agentId);
       await reload();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -730,15 +760,29 @@ function ProcessManagerModal({ brain, onClose }: { brain: Brain; onClose: () => 
 
   // Fixed viewport of exactly 8 rows (8 × 36px): the modal's height does not
   // breathe with the list, so the footer buttons never walk around while an
-  // operator is aiming at one, and anything past 8 scrolls.
-  const GRID = "grid grid-cols-[minmax(0,2.4fr)_minmax(0,1fr)_minmax(0,1fr)_84px_64px] gap-2";
+  // operator is aiming at one, and anything past 8 scrolls. Fleet mode adds
+  // the Brain column — it's the one fact the row owns that per-brain mode
+  // carries in its title.
+  const GRID = brain
+    ? "grid grid-cols-[minmax(0,2.4fr)_minmax(0,1fr)_minmax(0,1fr)_84px_64px] gap-2"
+    : "grid grid-cols-[minmax(0,1.2fr)_minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)_84px_64px] gap-2";
+
+  const rowClass = "flex items-center gap-1 truncate text-left font-mono underline-offset-2 hover:underline disabled:no-underline";
 
   return (
     <Modal
-      title={`Process Manager — ${brain.name}`}
-      subtitle={`Gateway sandboxes (agents) bound to ${brain.provider}/${brain.model}. Kill is offered for idle sandboxes only; a running task's sandbox is stopped through its task, not here.`}
+      title={
+        brain
+          ? `Process Manager — ${brain.name}`
+          : `Process Manager — ${fleetStatus === "RUNNING" ? "Running" : "Idle"} sandboxes (all brains)`
+      }
+      subtitle={
+        brain
+          ? `Gateway sandboxes (agents) bound to ${brain.provider}/${brain.model}. Kill is offered for idle sandboxes only; a running task's sandbox is stopped through its task, not here.`
+          : `Every live gateway sandbox currently ${fleetStatus === "RUNNING" ? "running a task" : "without a task"}, across all brains. Kill is offered for idle sandboxes only.`
+      }
       onClose={onClose}
-      width="max-w-3xl"
+      width={brain ? "max-w-3xl" : "max-w-4xl"}
     >
       {error ? (
         <div className="mb-2">
@@ -747,6 +791,7 @@ function ProcessManagerModal({ brain, onClose }: { brain: Brain; onClose: () => 
       ) : null}
       <div className="overflow-hidden rounded-lg border border-border">
         <div className={`${GRID} border-b border-border bg-muted/50 px-3 py-1.5 text-left text-[11px] font-medium`}>
+          {brain ? null : <span>Brain</span>}
           <span>Name</span>
           <span>Project</span>
           <span>Task</span>
@@ -770,7 +815,9 @@ function ProcessManagerModal({ brain, onClose }: { brain: Brain; onClose: () => 
             )
           ) : rows.length === 0 ? (
             <div className="flex h-full items-center justify-center px-3 text-center text-xs text-muted-foreground">
-              No live sandbox for this Brain yet — Test Connection provisions a probe agent, Create adds an empty one.
+              {brain
+                ? "No live sandbox for this Brain yet — Test Connection provisions a probe agent, Create adds an empty one."
+                : `No ${fleetStatus === "RUNNING" ? "running" : "idle"} sandbox right now.`}
             </div>
           ) : (
             rows.map((sandbox) => (
@@ -778,15 +825,38 @@ function ProcessManagerModal({ brain, onClose }: { brain: Brain; onClose: () => 
                 key={sandbox.agentId}
                 className={`${GRID} items-center border-b border-border/60 px-3 py-1.5 text-xs last:border-b-0`}
               >
-                <span className="truncate font-mono" title={sandbox.workspace ? `workspace: ${sandbox.workspace}` : sandbox.agentId}>
-                  {sandbox.name}
-                  {sandbox.probe ? <span className="ml-1 text-[10px] text-muted-foreground">probe</span> : null}
+                {brain ? null : (
+                  <span className="truncate" title={sandbox.brainId}>
+                    {sandbox.brainName}
+                  </span>
+                )}
+                <span className="min-w-0">
+                  <button
+                    type="button"
+                    className={rowClass}
+                    title={`Agent details: ${sandbox.name}\nworkspace: ${sandbox.workspace ?? "?"}`}
+                    onClick={() => setAgentDetail(sandbox)}
+                  >
+                    <span className="truncate">{sandbox.name}</span>
+                    {sandbox.probe ? <span className="font-sans text-[10px] text-muted-foreground">probe</span> : null}
+                  </button>
                 </span>
                 <span className="truncate text-muted-foreground" title={sandbox.projectId ?? undefined}>
                   {sandbox.projectId ?? "—"}
                 </span>
-                <span className="truncate text-muted-foreground" title={sandbox.taskId ?? undefined}>
-                  {sandbox.taskId ?? "—"}
+                <span className="min-w-0">
+                  {sandbox.taskId ? (
+                    <button
+                      type="button"
+                      className={rowClass}
+                      title={`Task detail: ${sandbox.taskId}`}
+                      onClick={() => setTaskDetail(sandbox.taskId)}
+                    >
+                      <span className="truncate">{sandbox.taskId}</span>
+                    </button>
+                  ) : (
+                    <span className="text-muted-foreground">—</span>
+                  )}
                 </span>
                 <span>
                   <Badge tone={sandbox.status === "RUNNING" ? "info" : "neutral"}>{sandbox.status}</Badge>
@@ -804,7 +874,7 @@ function ProcessManagerModal({ brain, onClose }: { brain: Brain; onClose: () => 
                       disabled={killing !== null || test.busy}
                       title="Kill this sandbox (agents.delete at the gateway)"
                       aria-label={`Kill ${sandbox.name}`}
-                      onClick={() => void kill(sandbox.agentId)}
+                      onClick={() => void kill(sandbox)}
                     >
                       {killing === sandbox.agentId ? (
                         <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
@@ -819,28 +889,33 @@ function ProcessManagerModal({ brain, onClose }: { brain: Brain; onClose: () => 
           )}
         </div>
       </div>
-      <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3">
-        <span className="min-w-0 flex-1 truncate text-[11px]">
-          {test.result ? (
-            <span className={testResultColor(test.result)}>
-              {test.result.message}
-            </span>
-          ) : (
-            <span className="text-muted-foreground">
-              Test Connection also provisions a probe agent when none exists — the list refreshes right after.
-            </span>
-          )}
-        </span>
-        <div className="flex shrink-0 items-center gap-2">
-          <Button size="sm" variant="outline" disabled={test.busy || createOpen} onClick={() => void runTest()}>
-            {test.busy ? "Testing…" : "Test"}
-          </Button>
-          <Button size="sm" disabled={test.busy || createOpen} onClick={() => setCreateOpen(true)}>
-            Create
-          </Button>
+      {brain ? (
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3">
+          <span className="min-w-0 flex-1 truncate text-[11px]">
+            {test.result ? (
+              <span className={testResultColor(test.result)}>{test.result.message}</span>
+            ) : (
+              <span className="text-muted-foreground">
+                Test Connection also provisions a probe agent when none exists — the list refreshes right after.
+              </span>
+            )}
+          </span>
+          <div className="flex shrink-0 items-center gap-2">
+            <Button size="sm" variant="outline" disabled={test.busy || createOpen} onClick={() => void runTest()}>
+              {test.busy ? "Testing…" : "Test"}
+            </Button>
+            <Button size="sm" disabled={test.busy || createOpen} onClick={() => setCreateOpen(true)}>
+              Create
+            </Button>
+          </div>
         </div>
-      </div>
-      {createOpen ? (
+      ) : (
+        <div className="mt-3 border-t border-border pt-3 text-[11px] text-muted-foreground">
+          Counts on the status card describe the whole fleet; this list is only the{" "}
+          {fleetStatus === "RUNNING" ? "running" : "idle"} slice.
+        </div>
+      )}
+      {createOpen && brain ? (
         <CreateSandboxModal
           brain={brain}
           onClose={() => setCreateOpen(false)}
@@ -850,6 +925,40 @@ function ProcessManagerModal({ brain, onClose }: { brain: Brain; onClose: () => 
           }}
         />
       ) : null}
+      {agentDetail ? <AgentDetailModal sandbox={agentDetail} onClose={() => setAgentDetail(null)} /> : null}
+      {taskDetail ? (
+        <TaskDialog taskId={taskDetail} models={models} onClose={() => setTaskDetail(null)} onChanged={() => void reload()} />
+      ) : null}
+    </Modal>
+  );
+}
+
+/**
+ * Agent facts for one sandbox row (D79): everything the controller's agents
+ * view plus attribution knows, in one glanceable sheet. No fetch — the row
+ * already carries all of it; a detail popup that reloads what it was just
+ * handed would only add a spinner between the click and the answer.
+ */
+function AgentDetailModal({ sandbox, onClose }: { sandbox: FleetSandbox; onClose: () => void }) {
+  const facts: Array<[string, ReactNode]> = [
+    ["Agent id", <span key="id" className="inline-flex items-center gap-1 font-mono">{sandbox.agentId}<CopyButton text={sandbox.agentId} label="Copy agent id" /></span>],
+    ["Status", <Badge key="st" tone={sandbox.status === "RUNNING" ? "info" : "neutral"}>{sandbox.status}</Badge>],
+    ["Brain", <span key="br" className="font-mono">{sandbox.brainName}</span>],
+    ["Workspace", <span key="ws" className="break-all font-mono">{sandbox.workspace ?? "—"}</span>],
+    ["Kind", <span key="kd">{sandbox.probe ? "probe (auto-provisioned by Test)" : "created"}</span>],
+    ["Project", <span key="pr" className="font-mono">{sandbox.projectId ?? "—"}</span>],
+    ["Last / active task", <span key="tk" className="font-mono">{sandbox.taskId ?? "—"}</span>],
+  ];
+  return (
+    <Modal title={`Agent — ${sandbox.name}`} subtitle="Facts from the gateway's agents view plus task attribution." onClose={onClose} width="max-w-lg">
+      <dl className="space-y-2 text-xs">
+        {facts.map(([label, value]) => (
+          <div key={label} className="flex gap-3">
+            <dt className="w-32 shrink-0 text-muted-foreground">{label}</dt>
+            <dd className="min-w-0 flex-1">{value}</dd>
+          </div>
+        ))}
+      </dl>
     </Modal>
   );
 }
@@ -1551,6 +1660,9 @@ export function SemanggiBrainsPanel() {
   const [busy, setBusy] = useState(false);
   const [modal, setModal] = useState<{ mode: "create" | "edit"; brain: Brain | null } | null>(null);
   const [processManager, setProcessManager] = useState<Brain | null>(null);
+  // D79: fleet status card. Running/Idle tiles open the fleet Process Manager.
+  const [fleetPm, setFleetPm] = useState<"RUNNING" | "IDLE" | null>(null);
+  const [overview, setOverview] = useState<{ total: number; running: number; idle: number } | null>(null);
   // D67: the delete gate needs to know what still routes through each brain —
   // explicit Brain Map pins (by id) and the default grid (by slug name, a
   // code constant the server cannot un-pin for you). Best-effort: if the map
@@ -1558,8 +1670,17 @@ export function SemanggiBrainsPanel() {
   // side of that failure.
   const [brainMapData, setBrainMapData] = useState<BrainMap | null>(null);
 
+  // D79: fleet counts for the status card. Fetched separately from the brain
+  // list on purpose — the card describes the GATEWAY's live agents, which the
+  // brains table never loads. Failure leaves the card hidden, not stuck at 0.
+  const reloadOverview = useCallback(async () => {
+    const res = await semanggi.sandboxesOverview().catch(() => null);
+    setOverview(res ? res.counts : null);
+  }, []);
+
   useEffect(() => {
     semanggi.models().then((m) => setModels(m.models)).catch(() => setModels([]));
+    void reloadOverview();
     // Cache first so the dropdowns are never empty while the gateway
     // answers, then the LIVE models.list — the provider gate (rev.3) reads
     // what AgentOS serves RIGHT NOW, and the persisted cache self-heals as
@@ -1599,6 +1720,7 @@ export function SemanggiBrainsPanel() {
     try {
       await semanggi.updateBrain(brain.id, { enabled: !brain.enabled });
       await reload();
+      void reloadOverview();
     } finally {
       setBusy(false);
     }
@@ -1638,6 +1760,7 @@ export function SemanggiBrainsPanel() {
   const removeBrain = async (brain: Brain) => {
     await semanggi.deleteBrain(brain.id);
     await reload();
+    void reloadOverview();
   };
 
   const draftFor = (brain: Brain | null): BrainDraft =>
@@ -1719,6 +1842,38 @@ export function SemanggiBrainsPanel() {
   return (
     <div className="w-full space-y-4">
       {error ? <LoadError error={error} onRetry={reload} /> : null}
+
+      {/* Fleet status (D79): the one question this page couldn't answer before
+          — "what is running RIGHT NOW" — answered above the fold. Running and
+          Idle are buttons: they open the Process Manager pre-filtered to that
+          slice, because a count you can't act on is just a dashboard. Total
+          stays plain (no action follows from "everything"). */}
+      {overview ? (
+        <div className="grid grid-cols-3 gap-3">
+          <div className="rounded-lg border border-border bg-card px-4 py-3">
+            <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Total sandboxes</div>
+            <div className="mt-1 text-2xl font-semibold">{overview.total}</div>
+          </div>
+          <button
+            type="button"
+            className="rounded-lg border border-border bg-card px-4 py-3 text-left transition-colors hover:bg-accent"
+            title="Open the Process Manager with every running sandbox"
+            onClick={() => setFleetPm("RUNNING")}
+          >
+            <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Running</div>
+            <div className="mt-1 text-2xl font-semibold text-sky-600 dark:text-sky-300">{overview.running}</div>
+          </button>
+          <button
+            type="button"
+            className="rounded-lg border border-border bg-card px-4 py-3 text-left transition-colors hover:bg-accent"
+            title="Open the Process Manager with every idle sandbox"
+            onClick={() => setFleetPm("IDLE")}
+          >
+            <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Idle</div>
+            <div className="mt-1 text-2xl font-semibold">{overview.idle}</div>
+          </button>
+        </div>
+      ) : null}
 
       <Card
         title="Brain"
@@ -1834,7 +1989,16 @@ export function SemanggiBrainsPanel() {
         />
       ) : null}
 
-      {processManager ? <ProcessManagerModal brain={processManager} onClose={() => setProcessManager(null)} /> : null}
+      {processManager ? (
+        <ProcessManagerModal
+          target={{ kind: "brain", brain: processManager }}
+          models={models}
+          onClose={() => setProcessManager(null)}
+        />
+      ) : null}
+      {fleetPm ? (
+        <ProcessManagerModal target={{ kind: "fleet", status: fleetPm }} models={models} onClose={() => setFleetPm(null)} />
+      ) : null}
     </div>
   );
 }

@@ -330,6 +330,43 @@ export function CopyButton({
 const modalStack: number[] = [];
 let nextModalId = 1;
 
+/**
+ * Register a modal-like layer in the shared Escape stack. Extracted from
+ * Modal (D79) because TaskDialog renders its own overlay markup yet now
+ * stacks ON TOP of Process Manager — an overlay outside the stack would
+ * answer Escape twice (its own listener plus the layer beneath it) and paint
+ * under a portaled Modal at the same z. The callback decides what "answering
+ * Escape" means (TaskDialog dismisses its side panel first).
+ */
+export function useModalLayer(onEscape: () => void) {
+  const modalIdRef = useRef(nextModalId++);
+  // Latest-callback ref: the effect registers once, but the semantics of the
+  // escape can change with state (side panel open or not).
+  const escapeRef = useRef(onEscape);
+  escapeRef.current = onEscape;
+
+  useEffect(() => {
+    modalStack.push(modalIdRef.current);
+    return () => {
+      const index = modalStack.indexOf(modalIdRef.current);
+      if (index >= 0) modalStack.splice(index, 1);
+    };
+  }, []);
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      // Stacked modals: only the topmost layer answers, so Escape peels one
+      // layer at a time instead of dismissing the whole stack underneath a
+      // form the operator is still filling in.
+      if (modalStack[modalStack.length - 1] !== modalIdRef.current) return;
+      escapeRef.current();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+}
+
 export function Modal({
   title,
   subtitle,
@@ -349,28 +386,7 @@ export function Modal({
   children: ReactNode;
   width?: string;
 }) {
-  const modalIdRef = useRef(nextModalId++);
-
-  useEffect(() => {
-    modalStack.push(modalIdRef.current);
-    return () => {
-      const index = modalStack.indexOf(modalIdRef.current);
-      if (index >= 0) modalStack.splice(index, 1);
-    };
-  }, []);
-
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      // Stacked modals: only the topmost layer answers, so Escape peels one
-      // layer at a time instead of dismissing the whole stack underneath a
-      // form the operator is still filling in.
-      if (modalStack[modalStack.length - 1] !== modalIdRef.current) return;
-      onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  useModalLayer(onClose);
 
   // Portal to document.body — required, not cosmetic. The Mission Control
   // shell renders the content column inside `relative z-20`, which is a

@@ -105,6 +105,10 @@ const ALLOWED: Array<{ method: string; pattern: RegExp }> = [
   { method: "GET", pattern: /^work\/brains\/[A-Za-z0-9_-]+\/sandboxes$/ },
   { method: "POST", pattern: /^work\/brains\/[A-Za-z0-9_-]+\/sandboxes$/ },
   { method: "POST", pattern: /^work\/brains\/[A-Za-z0-9_-]+\/sandboxes\/kill$/ },
+  // D79: fleet-wide status card on the Brain page (Total/Running/Idle) and
+  // the all-Running/all-Idle Process Manager lists. Query string is not part
+  // of the matched path (route params never carry it).
+  { method: "GET", pattern: /^work\/sandboxes$/ },
   { method: "POST", pattern: /^work\/gateway\/models\/refresh$/ },
   { method: "POST", pattern: /^work\/gateway\/thinking-levels\/refresh$/ },
   { method: "POST", pattern: /^work\/gateway\/thinking-levels\/probe$/ },

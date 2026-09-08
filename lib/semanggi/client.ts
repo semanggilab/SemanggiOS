@@ -413,6 +413,14 @@ export type BrainSandbox = {
   probe: boolean;
 };
 
+/** D79: one row of the fleet-wide overview. An agent satisfying two brains
+ *  (same provider+model) appears ONCE — attributed to the first brain in the
+ *  server's list order — because a Total counter that double-counts lies. */
+export type FleetSandbox = BrainSandbox & {
+  brainId: string;
+  brainName: string;
+};
+
 export type PlanStep = {
   role: string;
   label: string;
@@ -646,6 +654,14 @@ export const semanggi = {
       "POST",
       `work/brains/${id}/sandboxes/kill`,
       { agentId },
+    ),
+  // D79: fleet-wide counts for the status card + the all-Running/all-Idle
+  // Process Manager. Filter trims only the list; counts always describe the
+  // whole fleet.
+  sandboxesOverview: (status?: "RUNNING" | "IDLE") =>
+    call<{ counts: { total: number; running: number; idle: number }; sandboxes: FleetSandbox[] }>(
+      "GET",
+      `work/sandboxes${status ? `?status=${status}` : ""}`,
     ),
   // Cached list (fast, no live gateway call). refreshGatewayModels() below is
   // the one that actually asks the gateway and persists the answer here.
