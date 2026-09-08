@@ -1576,12 +1576,14 @@ function BrainFormModal({
             />
           </Field>
 
-          {/* D80: the keeper keeps this many live sandboxes for the brain,
-              capped by the model's concurrency limit. 0 (blank on create)
+          {/* D80/D81: the keeper keeps this many live sandboxes for the brain,
+              capped by the model's concurrency limit. Changing the number
+              reconciles the fleet immediately: grows below the floor, trims
+              the excess idle sem-auto sandboxes above it. 0 (blank on create)
               means the fleet is never grown automatically for it. */}
           <Field
             label="Minimum sandboxes"
-            hint="Live sandboxes kept for this brain (0 = never auto-provisioned). Capped by the model's concurrency limit; a task waiting on this model also grows one on demand."
+            hint="Live sandboxes kept for this brain (0 = never auto-provisioned). Saving adjusts the fleet right away — grows to the floor, trims excess idle auto-sandboxes above it; capped by the model's concurrency limit."
           >
             <input
               value={draft.minSandboxes}
@@ -1847,6 +1849,9 @@ export function SemanggiBrainsPanel() {
       minSandboxes: minFloor(draft.minSandboxes),
     });
     await reload();
+    // D81: a floor change reconciles the fleet server-side before the PATCH
+    // answers — the status card must not show a count that already changed.
+    void reloadOverview();
   };
 
   const submitEdit = async (id: string, draft: BrainDraft) => {
@@ -1877,6 +1882,9 @@ export function SemanggiBrainsPanel() {
       minSandboxes: draft.minSandboxes === "" ? undefined : minFloor(draft.minSandboxes),
     });
     await reload();
+    // D81: same reason as create — trim/grow already happened by the time the
+    // answer returns; the card should agree with the fleet.
+    void reloadOverview();
   };
 
   return (
