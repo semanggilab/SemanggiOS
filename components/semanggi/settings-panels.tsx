@@ -2451,6 +2451,27 @@ export function SemanggiBrainMapPanel() {
  * (availability, next available) — those belong to the scheduler's quota
  * signals and render read-only here.
  */
+/**
+ * Batas token sebagai angka yang bisa dibaca sekilas: 200000 → "200K".
+ *
+ * Dibulatkan HANYA untuk tampilan; angka penuh tetap ada di tooltip kolomnya.
+ * `null` menjadi "—", bukan "0" — gateway yang tidak melaporkan batas dan
+ * model yang batasnya nol adalah dua keadaan berbeda, dan menyamakannya di
+ * kolom ini akan membuat model sehat terlihat lumpuh.
+ */
+function formatTokens(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "—";
+  if (value >= 1_000_000) {
+    const m = value / 1_000_000;
+    return `${Number.isInteger(m) ? m : m.toFixed(1)}M`;
+  }
+  if (value >= 1000) {
+    const k = value / 1000;
+    return `${Number.isInteger(k) ? k : k.toFixed(1)}K`;
+  }
+  return String(value);
+}
+
 const AVAILABILITY_TONE: Record<string, "success" | "warning" | "danger" | "neutral"> = {
   AVAILABLE: "success",
   QUOTA_EXHAUSTED: "warning",
@@ -2758,6 +2779,16 @@ export function SemanggiModelMapPanel() {
                 <th className="px-2 py-1 font-medium">Credit</th>
                 <th className="px-2 py-1 font-medium">Conc.</th>
                 <th className="px-2 py-1 font-medium">Availability</th>
+                {/* D84: dua kolom BACA. Sumbernya config gateway, dan halaman
+                    ini tidak punya jalur tulis ke sana — judulnya menyebut
+                    "gateway" supaya tidak ada yang mencari tombol Edit yang
+                    memang tidak ada. */}
+                <th className="px-2 py-1 font-medium" title="Context window per model, dari config gateway (read-only di sini)">
+                  Context window
+                </th>
+                <th className="px-2 py-1 font-medium" title="Output token budget per model, dari config gateway (read-only di sini)">
+                  Max output
+                </th>
                 <th className="px-2 py-1 font-medium">Thinking levels</th>
                 <th className="px-2 py-1 font-medium">Evidence</th>
                 <th className="px-2 py-1" />
@@ -2796,6 +2827,15 @@ export function SemanggiModelMapPanel() {
                     ) : (
                       "—"
                     )}
+                  </td>
+                  {/* Angka besar dibaca sebagai ribuan ("200K"), tapi tooltip
+                      membawa angka penuh: sebuah keputusan tentang batas
+                      dibuat dengan angka persisnya, bukan dengan pembulatan. */}
+                  <td className="px-2 py-1 tabular-nums" title={row.contextWindow?.toLocaleString() ?? undefined}>
+                    {formatTokens(row.contextWindow)}
+                  </td>
+                  <td className="px-2 py-1 tabular-nums" title={row.maxTokens?.toLocaleString() ?? undefined}>
+                    {formatTokens(row.maxTokens)}
                   </td>
                   <td className="px-2 py-1">
                     {row.levels ? (
