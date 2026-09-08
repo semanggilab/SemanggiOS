@@ -2786,8 +2786,18 @@ export function SemanggiModelMapPanel() {
                 <th className="px-2 py-1 font-medium" title="Context window per model, dari config gateway (read-only di sini)">
                   Context window
                 </th>
-                <th className="px-2 py-1 font-medium" title="Output token budget per model, dari config gateway (read-only di sini)">
-                  Max output
+                {/* Diukur setelah deploy: RPC config.get mengembalikan config
+                    yang TERTULIS, bukan nilai efektif setelah katalog bawaan
+                    digabung (CLI `openclaw config get` menampilkan yang
+                    kedua). Jadi kolom ini kosong untuk model yang memakai
+                    default — dan judulnya harus mengatakan itu, karena "—"
+                    yang dikira "tidak ada batas" adalah kebohongan yang
+                    persis sebesar angka yang salah. */}
+                <th
+                  className="px-2 py-1 font-medium"
+                  title="Max output yang DISETEL di config gateway. Kosong = model memakai default katalog gateway, bukan berarti tanpa batas."
+                >
+                  Max output<span className="ml-0.5 text-muted-foreground">*</span>
                 </th>
                 <th className="px-2 py-1 font-medium">Thinking levels</th>
                 <th className="px-2 py-1 font-medium">Evidence</th>
@@ -2834,7 +2844,10 @@ export function SemanggiModelMapPanel() {
                   <td className="px-2 py-1 tabular-nums" title={row.contextWindow?.toLocaleString() ?? undefined}>
                     {formatTokens(row.contextWindow)}
                   </td>
-                  <td className="px-2 py-1 tabular-nums" title={row.maxTokens?.toLocaleString() ?? undefined}>
+                  <td
+                    className="px-2 py-1 tabular-nums"
+                    title={row.maxTokens?.toLocaleString() ?? "memakai default katalog gateway (tidak disetel di config)"}
+                  >
                     {formatTokens(row.maxTokens)}
                   </td>
                   <td className="px-2 py-1">
