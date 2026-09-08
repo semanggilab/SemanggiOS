@@ -825,6 +825,17 @@ function ExecutionDetail({ execution, turns }: { execution: Execution; turns: Tr
   // (newest revision first), a single execution's own turns are a
   // conversation, and a conversation reads top-to-bottom.
   const own = turns.filter((t) => t.executionId === execution.id);
+  // A COMPLETE run whose transcript holds no assistant text is not a
+  // rendering bug — it is the `length` truncation D82 measured: the final
+  // answer turn hit the model output cap and the gateway's fallback reply
+  // never reaches subscribers. Saying so beats silence, and beats faking a
+  // Response card the model never delivered.
+  const hasTextAnswer = own.some(
+    (t) =>
+      t.role === "assistant" &&
+      ((t.blocks ?? []).some((b) => b.type === "text" && stripFinal(String(b.text ?? "")).trim().length > 0) ||
+        (!(t.blocks ?? []).length && stripFinal(String(t.text ?? "")).trim().length > 0)),
+  );
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-1 gap-x-4 gap-y-0.5 text-xs sm:grid-cols-2">
@@ -858,6 +869,18 @@ function ExecutionDetail({ execution, turns }: { execution: Execution; turns: Tr
           ))
         )}
       </div>
+
+      {execution.status === "COMPLETE" && own.length > 0 && !hasTextAnswer ? (
+        <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 px-3 py-2">
+          <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-amber-700 dark:text-amber-300">No final answer</div>
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            This run completed without a final text answer — the final turn likely hit the model output cap
+            (stop reason <code className="rounded bg-amber-500/15 px-1">length</code>), and the gateway&rsquo;s
+            fallback reply is not delivered to this transcript. The work above may still be intact: check the last
+            tool outputs, or revise the task asking only for the conclusion.
+          </p>
+        </div>
+      ) : null}
     </div>
   );
 }
