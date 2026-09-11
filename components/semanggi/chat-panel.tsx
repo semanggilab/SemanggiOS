@@ -330,11 +330,13 @@ export function ChatMessageView({
            * sebelum mengirim ulang ke brain lain; seleksi manual pada bubble
            * tinted selalu mungkin, tombol ini membuatnya satu klik.
            * Di KIRI bubble: kanan adalah tepi kolom transkrip. */}
-          <CopyButton
-            text={message.content}
-            label="Copy message"
-            className="absolute -left-8 top-1.5 p-1.5 opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
-          />
+          {message.content ? (
+            <CopyButton
+              text={message.content}
+              label="Copy message"
+              className="absolute -left-8 top-1.5 p-1.5 opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
+            />
+          ) : null}
           <div className="rounded-[20px] bg-primary/15 px-4 py-2.5 text-sm leading-relaxed text-foreground">
             {message.content}
           </div>
