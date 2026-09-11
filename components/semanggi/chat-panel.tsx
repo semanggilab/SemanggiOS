@@ -6,7 +6,8 @@
 // sana juga — komponen ini tidak pernah memanggil API sendiri supaya "siapa
 // yang memutuskan apa" tetap satu tempat (kepala control-page.tsx).
 
-import { Archive, ArchiveRestore, Bot, FileText, LoaderCircle, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Archive, ArchiveRestore, Bot, FileText, LoaderCircle, MoreVertical, PanelLeftClose, Pencil, X } from "lucide-react";
 import type { Brain, ChatMessage, ChatSession } from "@/lib/semanggi/client";
 import { relativeTime } from "@/lib/semanggi/client";
 import { Badge, CopyButton } from "./ui";
@@ -42,15 +43,32 @@ export function ChatSessionsSidebar({
   onOpen,
   onNew,
   onArchiveToggle,
+  onCollapse,
 }: {
   sessions: ChatSession[];
   activeSessionId: string | null;
   onOpen: (id: string) => void;
   onNew: () => void;
   onArchiveToggle: (session: ChatSession) => void;
+  /** Sembunyikan daftar jadi rail tipis — panggilan dari header sidebar,
+   *  bukan ikon di tiap baris: collapse adalah keputusan tentang SEMUA
+   *  sesi, bukan tentang satu sesi. */
+  onCollapse: () => void;
 }) {
   return (
     <div className="flex flex-col gap-2 px-3 py-3">
+      <div className="flex items-center justify-between gap-2 px-1">
+        <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Sessions</span>
+        <button
+          type="button"
+          aria-label="Collapse session list"
+          title="Collapse the session list to a rail"
+          onClick={onCollapse}
+          className="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+        >
+          <PanelLeftClose className="h-3.5 w-3.5" />
+        </button>
+      </div>
       <button
         type="button"
         onClick={onNew}
@@ -109,29 +127,153 @@ export function ChatSessionsSidebar({
 }
 
 /**
- * Header ruang: identitas sesi + otak + arsip + tutup. Brain adalah tombol —
+ * Menu "3 dot vertical" untuk sesi (pola D78 BrainRowActions): rename dan
+ * arsip dikumpulkan di satu titik, karena lebar header sudah dipakai fakta
+ * (judul, badge brain) — tombol teks tersebar membuat header sesi bengkak
+ * sebelum transkrip mulai. Klik-luar dan Escape menutup tanpa memicu item
+ * yang kebetulan diklik (mousedown, bukan click).
+ */
+function SessionMenu({
+  archived,
+  onRename,
+  onArchiveToggle,
+}: {
+  archived: boolean;
+  onRename: () => void;
+  onArchiveToggle: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (event: MouseEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+  const itemClass = "flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs transition-colors hover:bg-accent";
+  return (
+    <div ref={rootRef} className="relative">
+      <button
+        type="button"
+        aria-label="Session actions"
+        title="Session actions"
+        onClick={() => setOpen((v) => !v)}
+        className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+      >
+        <MoreVertical className="h-4 w-4" />
+      </button>
+      {open ? (
+        <div className="absolute right-0 top-8 z-40 w-40 rounded-lg border border-border bg-background py-1 shadow-lg">
+          <button
+            type="button"
+            className={itemClass}
+            title="Rename this session"
+            onClick={() => {
+              setOpen(false);
+              onRename();
+            }}
+          >
+            <Pencil className="h-3.5 w-3.5 shrink-0" />
+            Rename…
+          </button>
+          <button
+            type="button"
+            className={itemClass}
+            title={archived ? "Unarchive this session" : "Archive this session"}
+            onClick={() => {
+              setOpen(false);
+              onArchiveToggle();
+            }}
+          >
+            {archived ? <ArchiveRestore className="h-3.5 w-3.5 shrink-0" /> : <Archive className="h-3.5 w-3.5 shrink-0" />}
+            {archived ? "Unarchive" : "Archive"}
+          </button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * Header ruang: identitas sesi + otak + menu + tutup. Brain adalah tombol —
  * itulah pintu picker dua tingkat (§7.4); ganti brain sesi aktif lewat situ
  * dan KONFIRMASI reset context (§10.2) dipegang pemanggil, bukan di sini.
+ * Judul bisa diganti INLINE (menu Rename…): input menggantikan judul, Enter
+ * menyimpan, Escape membuang — modal untuk satu field pendek hanya
+ * memindahkan teks dua kali.
  */
 export function ChatRoomHeader({
   session,
   brain,
   onPickBrain,
   onArchiveToggle,
+  onRename,
   onClose,
 }: {
   session: ChatSession;
   brain: Brain | null;
   onPickBrain: () => void;
   onArchiveToggle: () => void;
+  onRename: (title: string) => void | Promise<void>;
   onClose: () => void;
 }) {
   const archived = session.status === "ARCHIVED";
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [saving, setSaving] = useState(false);
+  const startRename = () => {
+    setDraft(session.title ?? "");
+    setEditing(true);
+  };
+  const commit = async () => {
+    if (saving) return;
+    const title = draft.trim();
+    setEditing(false);
+    if (!title || title === (session.title ?? "")) return;
+    setSaving(true);
+    try {
+      await onRename(title);
+    } finally {
+      setSaving(false);
+    }
+  };
   return (
     <div className="flex flex-wrap items-center gap-2 border-b border-border/70 bg-background/95 px-4 py-2 backdrop-blur">
-      <span className="min-w-0 flex-1 truncate text-sm font-semibold">
-        {session.title ?? "Untitled chat"}
-      </span>
+      {editing ? (
+        <input
+          // eslint-disable-next-line jsx-a11y/no-autofocus -- dialog-less inline edit: the whole point is landing in the field
+          autoFocus
+          value={draft}
+          disabled={saving}
+          maxLength={200}
+          onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              void commit();
+            }
+            if (event.key === "Escape") {
+              event.preventDefault();
+              setEditing(false);
+            }
+          }}
+          onBlur={() => void commit()}
+          className="min-w-0 flex-1 rounded-md border border-border bg-background px-2 py-1 text-sm font-semibold outline-none focus:ring-1 focus:ring-ring"
+        />
+      ) : (
+        <span className="min-w-0 flex-1 truncate text-sm font-semibold" title={session.title ?? `Session ${session.id}`}>
+          {session.title ?? "Untitled chat"}
+        </span>
+      )}
       {archived ? <Badge tone="warning">archived</Badge> : null}
       <button
         type="button"
@@ -148,15 +290,7 @@ export function ChatRoomHeader({
           </span>
         ) : null}
       </button>
-      <button
-        type="button"
-        aria-label={archived ? "Unarchive session" : "Archive session"}
-        title={archived ? "Unarchive this session" : "Archive this session"}
-        onClick={onArchiveToggle}
-        className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-      >
-        {archived ? <ArchiveRestore className="h-4 w-4" /> : <Archive className="h-4 w-4" />}
-      </button>
+      <SessionMenu archived={archived} onRename={startRename} onArchiveToggle={onArchiveToggle} />
       <button
         type="button"
         aria-label="Close session"
@@ -190,8 +324,17 @@ export function ChatMessageView({
 }) {
   if (message.role === "operator") {
     return (
-      <div className="flex justify-end">
-        <div className="max-w-[82%] space-y-1.5">
+      <div className="group flex justify-end">
+        <div className="relative max-w-[82%] space-y-1.5">
+          {/* Salin pesan sendiri — operator memindai ulang prompt panjangnya
+           * sebelum mengirim ulang ke brain lain; seleksi manual pada bubble
+           * tinted selalu mungkin, tombol ini membuatnya satu klik.
+           * Di KIRI bubble: kanan adalah tepi kolom transkrip. */}
+          <CopyButton
+            text={message.content}
+            label="Copy message"
+            className="absolute -left-8 top-1.5 p-1.5 opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
+          />
           <div className="rounded-[20px] bg-primary/15 px-4 py-2.5 text-sm leading-relaxed text-foreground">
             {message.content}
           </div>

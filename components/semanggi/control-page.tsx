@@ -30,7 +30,7 @@
 // the router isn't sure about becomes a question, never an action.
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { ArrowDown, Bot, FileText, LoaderCircle, Paperclip, SendHorizontal, X } from "lucide-react";
+import { ArrowDown, Bot, FileText, LoaderCircle, PanelLeftOpen, Paperclip, SendHorizontal, X } from "lucide-react";
 import {
   semanggi,
   type Brain,
@@ -244,6 +244,12 @@ export function ControlPage({
   const [chatPollTick, setChatPollTick] = useState(0);
   const [pickerMode, setPickerMode] = useState<null | "new" | "switch">(null);
   const [brainSwitchTarget, setBrainSwitchTarget] = useState<Brain | null>(null);
+  // Sidebar sesi bisa dilipat jadi rail tipis: transkrip yang sedang dibaca
+  // adalah alasan halaman ini dibuka, dan pada layar sempit daftar sesi
+  // mencuri lebar kolom percakapan. Tanpa persistence — keadaan pilihan
+  // tampilan segar per kunjungan sudah cukup (pola yang sama dengan lebar
+  // viewer yang juga tidak di-persist).
+  const [chatSidebarCollapsed, setChatSidebarCollapsed] = useState(false);
   // Router reply saat ruang terbuka tetap masuk riwayat router (`messages`),
   // tapi yang DIRENDER di ruang hanyalah yang lahir setelah ruang dibuka —
   // dua jendela waktu, satu sumber data.
@@ -323,6 +329,22 @@ export function ControlPage({
   }, []);
 
   const closeRoom = useCallback(() => setChatSessionId(null), []);
+
+  // Rename judul sesi (PATCH sudah lama menerima title — UI-nya yang belum).
+  // Transkrip ruang ikut di-refresh karena presentasi sesi (judul) hidup di
+  // dua tempat: header ruang dan baris sidebar.
+  const renameSession = useCallback(
+    async (session: ChatSession, title: string) => {
+      try {
+        await semanggi.patchChatSession(session.id, { title });
+        if (chatSessionId === session.id) setChatPollTick((t) => t + 1);
+        refreshChatSessions();
+      } catch (err) {
+        setChatError(err instanceof Error ? err.message : String(err));
+      }
+    },
+    [chatSessionId, refreshChatSessions],
+  );
 
   const toggleArchive = useCallback(
     async (session: ChatSession) => {
@@ -762,7 +784,20 @@ export function ControlPage({
           {docs ? (
             <div className="hidden flex-wrap items-center gap-2 pb-2 sm:flex">
               {docs.docs.map((d) => (
-                <DocPill key={d.name} doc={d} onOpen={() => setOpenDoc(d.name)} />
+                <DocPill
+                  key={d.name}
+                  doc={d}
+                  onOpen={() => {
+                    // Dokumen yang ADA dibuka di panel viewer di kanan (permintaan
+                    // operator 2026-09-11: membaca sambil memandu percakapan,
+                    // bukan dialog yang menutupi transkrip). Yang BELUM ada tetap
+                    // ke modal DocModal — di sanalah tombol bootstrap
+                    // "Create plans/tasks" hidup; panel viewer untuk berkas yang
+                    // tidak ada hanya bisa berkata "tidak ada".
+                    if (d.exists) viewer.open(`${d.dir}/${d.name}.md`);
+                    else setOpenDoc(d.name);
+                  }}
+                />
               ))}
             </div>
           ) : null}
@@ -802,18 +837,33 @@ export function ControlPage({
       <div className="flex min-h-0 flex-1">
         {/* Sidebar sesi chat (§12.8) — tersembunyi di bawah lg. Padding bawah
             setinggi composer yang fixed: tanpa itu sesi paling bawah bersembunyi
-            di balik bilah input. */}
-        <aside
-          className="hidden w-64 shrink-0 overflow-y-auto border-r border-border/70 lg:block"
-          style={{ paddingBottom: composerHeight }}
-        >
-          <ChatSessionsSidebar
-            sessions={chatSessions}
-            activeSessionId={chatSessionId}
-            onOpen={openRoom}
-            onNew={() => setPickerMode("new")}
-            onArchiveToggle={(session) => void toggleArchive(session)}
-          />
+            di balik bilah input. Rail tipis saat dilipat: satu tombol expand —
+            "New session" butuh picker penuh, jadi rail tidak menjanjikannya. */}
+        <aside className="hidden shrink-0 flex-col border-r border-border/70 lg:flex">
+          {chatSidebarCollapsed ? (
+            <div className="flex flex-col items-center gap-1 px-1 py-3" style={{ paddingBottom: composerHeight }}>
+              <button
+                type="button"
+                aria-label="Show session list"
+                title="Show the session list"
+                onClick={() => setChatSidebarCollapsed(false)}
+                className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              >
+                <PanelLeftOpen className="h-4 w-4" />
+              </button>
+            </div>
+          ) : (
+            <div className="w-64 overflow-y-auto" style={{ paddingBottom: composerHeight }}>
+              <ChatSessionsSidebar
+                sessions={chatSessions}
+                activeSessionId={chatSessionId}
+                onOpen={openRoom}
+                onNew={() => setPickerMode("new")}
+                onArchiveToggle={(session) => void toggleArchive(session)}
+                onCollapse={() => setChatSidebarCollapsed(true)}
+              />
+            </div>
+          )}
         </aside>
 
         {/* `relative` anchors the jump-to-bottom button to this scroll region
@@ -830,6 +880,7 @@ export function ControlPage({
                   brain={roomBrain}
                   onPickBrain={() => setPickerMode("switch")}
                   onArchiveToggle={() => void toggleArchive(roomSession)}
+                  onRename={(title) => renameSession(roomSession, title)}
                   onClose={closeRoom}
                 />
               </div>
@@ -883,9 +934,16 @@ export function ControlPage({
                       key: `local-${m.at}-${i}`,
                       node:
                         m.kind === "operator" ? (
-                          <div className="flex justify-end">
-                            <div className="max-w-[82%] rounded-[20px] bg-primary/15 px-4 py-2.5 text-sm leading-relaxed text-foreground">
-                              {m.text}
+                          <div className="group flex justify-end">
+                            <div className="relative max-w-[82%]">
+                              <CopyButton
+                                text={m.text}
+                                label="Copy message"
+                                className="absolute -left-8 top-1.5 p-1.5 opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
+                              />
+                              <div className="rounded-[20px] bg-primary/15 px-4 py-2.5 text-sm leading-relaxed text-foreground">
+                                {m.text}
+                              </div>
                             </div>
                           </div>
                         ) : (
@@ -922,12 +980,19 @@ export function ControlPage({
 
                   {messages.map((message, index) =>
                     message.kind === "operator" ? (
-                      <div key={index} className="flex justify-end">
+                      <div key={index} className="group flex justify-end">
                         {/* Tinted, not filled: a full `bg-primary` bubble reads as a
                       button and dominates the column; /15 keeps the operator's
                       own words visually secondary to the system's replies. */}
-                        <div className="max-w-[82%] rounded-[20px] bg-primary/15 px-4 py-2.5 text-sm leading-relaxed text-foreground">
-                          {message.text}
+                        <div className="relative max-w-[82%]">
+                          <CopyButton
+                            text={message.text}
+                            label="Copy message"
+                            className="absolute -left-8 top-1.5 p-1.5 opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
+                          />
+                          <div className="rounded-[20px] bg-primary/15 px-4 py-2.5 text-sm leading-relaxed text-foreground">
+                            {message.text}
+                          </div>
                         </div>
                       </div>
                     ) : (
@@ -1147,6 +1212,16 @@ export function ControlPage({
                   hidden
                   onChange={(event) => void uploadFiles(event.target.files)}
                 />
+                {/* Salin draf — muncul hanya saat ada isinya: menyalin string
+                    kosong ke papan klip akan MENIMPA apa yang operator baru
+                    saja salin, dan itu kerusakan kecil yang sulit dilacak.
+                    Slot-nya tetap dipasang supaya paperclip/send tidak
+                    bergeser saat ketikan pertama masuk. */}
+                <span className="flex h-9 w-9 shrink-0 items-center justify-center">
+                  {text.trim().length > 0 ? (
+                    <CopyButton text={text} label="Copy draft" iconClassName="h-4 w-4" />
+                  ) : null}
+                </span>
                 <button
                   type="button"
                   aria-label="Attach text files"
@@ -1243,10 +1318,15 @@ export function ControlPage({
           subtitle={`${brainSwitchTarget.provider}/${brainSwitchTarget.model}`}
           onClose={() => setBrainSwitchTarget(null)}
           width="max-w-md"
-          actions={
-            <Button size="sm" variant="danger" disabled={chatBusy} onClick={() => void confirmBrainSwitch()}>
-              Yes, reset context
-            </Button>
+          footer={
+            <>
+              <Button size="sm" variant="outline" disabled={chatBusy} onClick={() => setBrainSwitchTarget(null)}>
+                Cancel
+              </Button>
+              <Button size="sm" variant="danger" disabled={chatBusy} onClick={() => void confirmBrainSwitch()}>
+                Yes, reset context
+              </Button>
+            </>
           }
         >
           <p className="text-sm leading-relaxed">

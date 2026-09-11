@@ -371,6 +371,7 @@ export function Modal({
   title,
   subtitle,
   actions,
+  footer,
   onClose,
   children,
   width = "max-w-2xl",
@@ -382,6 +383,12 @@ export function Modal({
   // document the title names) should sit with it. A button floated in the
   // body instead moved between read and edit mode and read as page chrome.
   actions?: ReactNode;
+  // Footer is for DIALOG VERBS (Yes/Cancel) that commit or abandon what the
+  // body describes — right-aligned at the bottom edge, the place every
+  // platform trains the eye to find them (operator request 2026-09-11: the
+  // brain-switch confirm's Yes had floated in the header next to the title
+  // and Cancel was nowhere at all).
+  footer?: ReactNode;
   onClose: () => void;
   children: ReactNode;
   width?: string;
@@ -419,6 +426,9 @@ export function Modal({
           </Button>
         </div>
         <div className="px-5 py-4">{children}</div>
+        {footer ? (
+          <div className="flex flex-wrap items-center justify-end gap-2 border-t border-border px-5 py-3">{footer}</div>
+        ) : null}
       </div>
     </div>,
     document.body,
