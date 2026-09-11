@@ -29,11 +29,14 @@
 // CONFIRM is not a failure. It's §8.2's rule doing its job: a classification
 // the router isn't sure about becomes a question, never an action.
 
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { ArrowDown, Bot, FileText, LoaderCircle, Paperclip, SendHorizontal, X } from "lucide-react";
 import {
   semanggi,
+  type Brain,
   type CatalogModel,
+  type ChatMessage,
+  type ChatSession,
   type ControlReply,
   type PlanStep,
   type ProjectDocStatus,
@@ -47,6 +50,8 @@ import { Badge, Button, CopyButton, Empty, LoadError, Modal, Notice, Select } fr
 import { MarkdownView } from "./markdown";
 import { useViewer, viewerWidthPct } from "./viewer-context";
 import { TaskDialog } from "./task-dialog";
+import { ChatMessageView, ChatRoomEmptyState, ChatRoomHeader, ChatSessionsSidebar, chatMessageInFlight } from "./chat-panel";
+import { BrainPickerModal } from "./brain-picker";
 
 type Message =
   | { kind: "operator"; text: string; at: number }
@@ -54,6 +59,11 @@ type Message =
 
 const MIN_ROWS = 1;
 const MAX_TEXTAREA_PX = 200;
+
+/** Polling transkrip chat (pola D74): 10 detik, dan hanya selama ada pesan
+ *  brain yang masih PENDING/RUNNING — poll pada transkrip diam adalah
+ *  permintaan yang jawabannya tidak akan berubah. */
+const CHAT_POLL_MS = 10_000;
 
 // --- lampiran operator: teks saja (D77) ---------------------------------------
 //
@@ -212,6 +222,237 @@ export function ControlPage({
   })();
   const listOpen = suggestions.length > 0;
 
+  // --- POC-10 chat room (spec §12.8) ---------------------------------------
+  //
+  // Semua keputusan tetap di halaman ini (kepala berkas): komponen
+  // chat-panel hanya menampilkan. `openChat` adalah salinan transkrip hasil
+  // poll; `roomSession` sesi yang sedang dibuka — SESI TERBUKA TIDAK IKUT
+  // PINDAH saat Active Project berganti (§7.3): guard projectId di server
+  // akan menolak pesan, dan UI menunjukkan itu sebagai notice + routing
+  // jatuh kembali ke router, bukan menutup ruang diam-diam.
+  const [chatBrains, setChatBrains] = useState<Brain[]>([]);
+  const [chatSessions, setChatSessions] = useState<ChatSession[]>([]);
+  const [chatSessionId, setChatSessionId] = useState<string | null>(null);
+  const [openChat, setOpenChat] = useState<{ session: ChatSession; messages: ChatMessage[] } | null>(null);
+  const [chatBusy, setChatBusy] = useState(false);
+  const [chatError, setChatError] = useState<string | null>(null);
+  const [chatUploading, setChatUploading] = useState(false);
+  const [chatUploadError, setChatUploadError] = useState<string | null>(null);
+  const [chatAttachments, setChatAttachments] = useState<Attachment[]>([]);
+  // Dipakai untuk memaksa poll segera (setelah kirim/arsip/ganti brain);
+  // poll yang berjalan tidak di-restart oleh state transkripnya sendiri.
+  const [chatPollTick, setChatPollTick] = useState(0);
+  const [pickerMode, setPickerMode] = useState<null | "new" | "switch">(null);
+  const [brainSwitchTarget, setBrainSwitchTarget] = useState<Brain | null>(null);
+  // Router reply saat ruang terbuka tetap masuk riwayat router (`messages`),
+  // tapi yang DIRENDER di ruang hanyalah yang lahir setelah ruang dibuka —
+  // dua jendela waktu, satu sumber data.
+  const roomOpenedAt = useRef(0);
+
+  const roomSession = openChat?.session ?? null;
+  const roomBrain = roomSession ? (chatBrains.find((b) => b.id === roomSession.brainId) ?? null) : null;
+  const roomProjectMatches = roomSession !== null && roomSession.projectId === projectId;
+  // Syarat routing chat: ruang terbuka, AKTIF, dan milik project aktif.
+  // Selain itu composer berperilaku persis seperti sebelum POC-10.
+  const chatRoomUsable = roomSession !== null && roomSession.status === "ACTIVE" && roomProjectMatches;
+
+  useEffect(() => {
+    // Satu kali per muat halaman: daftar untuk picker + pelabelan bubble.
+    // Kegagalannya menurunkan picker menjadi nama kosong — bukan alasan
+    // membannner seluruh halaman.
+    semanggi
+      .brains()
+      .then((r) => setChatBrains(r.brains))
+      .catch(() => {});
+  }, []);
+
+  const refreshChatSessions = useCallback(() => {
+    if (!projectId) return;
+    semanggi
+      .listChatSessions(projectId)
+      .then((r) => setChatSessions(r.sessions))
+      .catch(() => {});
+  }, [projectId]);
+
+  useEffect(() => {
+    if (!projectId) {
+      setChatSessions([]);
+      return;
+    }
+    refreshChatSessions();
+  }, [projectId, refreshChatSessions]);
+
+  // Ambil + poll transkrip ruang terbuka. Poll HANYAH dilanjutkan selama ada
+  // pesan brain in-flight; berhenti total pada transkrip diam, dan
+  // chatPollTick memulai ulang seketika setiap ada aksi (kirim pesan, arsip,
+  // ganti brain) — pola yang sama dengan DocTaskLive.
+  useEffect(() => {
+    if (!chatSessionId) {
+      setOpenChat(null);
+      return;
+    }
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const poll = async () => {
+      try {
+        const r = await semanggi.chatSession(chatSessionId);
+        if (cancelled) return;
+        setOpenChat(r);
+        setChatError(null);
+        const moving = r.messages.some((m) => m.role === "brain" && chatMessageInFlight(m.status));
+        if (!moving) return;
+      } catch (err) {
+        if (cancelled) return;
+        setChatError(err instanceof Error ? err.message : String(err));
+      }
+      if (!cancelled) timer = setTimeout(poll, CHAT_POLL_MS);
+    };
+    void poll();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [chatSessionId, chatPollTick]);
+
+  const openRoom = useCallback((id: string) => {
+    setChatSessionId(id);
+    roomOpenedAt.current = Date.now();
+    setChatAttachments([]);
+    setChatError(null);
+    setChatUploadError(null);
+  }, []);
+
+  const closeRoom = useCallback(() => setChatSessionId(null), []);
+
+  const toggleArchive = useCallback(
+    async (session: ChatSession) => {
+      const next = session.status === "ARCHIVED" ? "ACTIVE" : "ARCHIVED";
+      try {
+        await semanggi.patchChatSession(session.id, { status: next });
+        if (chatSessionId === session.id) setChatPollTick((t) => t + 1);
+        refreshChatSessions();
+      } catch (err) {
+        setChatError(err instanceof Error ? err.message : String(err));
+      }
+    },
+    [chatSessionId, refreshChatSessions],
+  );
+
+  // Jalur chat composer: operator bubble TIDAK di-append lokal — baris
+  // operator adalah baris transkrip DONE di server, append lokal hanya akan
+  // menduplikasinya saat poll berikutnya mendarat.
+  const sendChat = async (value: string) => {
+    const session = roomSession;
+    if (!session) return;
+    setChatBusy(true);
+    setChatError(null);
+    try {
+      await semanggi.sendChatMessage(session.id, {
+        text: value,
+        projectId,
+        attachments: chatAttachments.length > 0 ? chatAttachments.map((a) => a.path) : undefined,
+      });
+      setText("");
+      setCaret(0);
+      setChatAttachments([]);
+      setChatPollTick((t) => t + 1);
+      refreshChatSessions();
+    } catch (err) {
+      setChatError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setChatBusy(false);
+    }
+  };
+
+  // Unggahan ruang: akar chat/<id>/uploads (§7.5) — TIDAK ada token "@"
+  // disisipkan ke teks; attachments dikirim sebagai daftar path dan server
+  // yang menuliskannya ke prompt agen.
+  const uploadChatFiles = async (list: FileList) => {
+    const session = roomSession;
+    if (!session) return;
+    if (session.status !== "ACTIVE" || !roomProjectMatches) {
+      setChatUploadError("Uploads need an active session on the active project.");
+      return;
+    }
+    setChatUploading(true);
+    setChatUploadError(null);
+    const staged: Attachment[] = [];
+    try {
+      for (const file of Array.from(list)) {
+        if (!isTextUploadName(file.name)) {
+          setChatUploadError(`${file.name}: only text files can be attached (md, txt, json, csv, yml, …)`);
+          continue;
+        }
+        try {
+          const saved = await semanggi.uploadChatFile(session.id, file.name, file);
+          staged.push({ name: file.name, path: saved.path });
+        } catch (err) {
+          setChatUploadError(`${file.name}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+    } finally {
+      setChatUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+    if (staged.length > 0) {
+      setChatAttachments((prev) => [...prev, ...staged]);
+      textareaRef.current?.focus();
+    }
+  };
+
+  // Chip ruang hanya membuang dari PESAN yang disusun — berkasnya tidak punya
+  // endpoint hapus (beda staging D77): yang yatim disapu penyapu TTL, dan
+  // mengaku bisa menghapusnya akan menjanjikan hal yang tidak dilakukan.
+  const removeChatAttachment = (attachment: Attachment) => {
+    setChatAttachments((prev) => prev.filter((a) => a.path !== attachment.path));
+  };
+
+  const handlePickerSelect = async (brainId: string | null) => {
+    const mode = pickerMode;
+    setPickerMode(null);
+    if (mode === "switch") {
+      // No-op untuk brain yang sama (server pun begitu); beda brain → dialog
+      // konfirmasi reset context (§10.2) sebelum menyentuh sesi.
+      if (!roomSession || brainId === null || brainId === roomSession.brainId) return;
+      setBrainSwitchTarget(chatBrains.find((b) => b.id === brainId) ?? null);
+      return;
+    }
+    if (!projectId) return;
+    setChatBusy(true);
+    setChatError(null);
+    try {
+      const r = await semanggi.createChatSession({ projectId, brainId: brainId ?? undefined });
+      refreshChatSessions();
+      roomOpenedAt.current = Date.now();
+      setChatSessionId(r.session.id);
+      textareaRef.current?.focus();
+    } catch (err) {
+      setChatError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setChatBusy(false);
+    }
+  };
+
+  const confirmBrainSwitch = async () => {
+    const session = roomSession;
+    if (!session || !brainSwitchTarget) return;
+    setChatBusy(true);
+    try {
+      await semanggi.switchChatBrain(session.id, brainSwitchTarget.id, true);
+      setBrainSwitchTarget(null);
+      setChatPollTick((t) => t + 1);
+      refreshChatSessions();
+    } catch (err) {
+      setChatError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setChatBusy(false);
+    }
+  };
+
+  // Groom: pesan router yang lahir SETELAH ruang dibuka, untuk render
+  // interleave di dalam ruang (lihat roomOpenedAt).
+  const roomRouterMessages = openChat ? messages.filter((m) => m.at >= roomOpenedAt.current) : [];
+
   // Daftar task diambil saat token-nya PERTAMA kali muncul (task jarang lahir
   // menit ini juga), tetapi daftar BERKAS diambil SETIAP kali token "@" aktif:
   // deliverables/<task-id>/ lahir terus dari task yang selesai, dan daftar yang
@@ -341,8 +582,10 @@ export function ControlPage({
   // is instead one press of the arrow button away (below).
   useEffect(() => {
     if (atBottom) endRef.current?.scrollIntoView({ behavior: "smooth" });
+    // openChat ikut menjadi dep: di dalam ruang, pesan baru datang dari poll
+    // transkrip, bukan dari `messages` jalur router.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [messages]);
+  }, [messages, openChat]);
 
   // Threshold, not exact-zero: a fractional-pixel gap from font rendering or
   // the smooth-scroll animation settling should still count as "at bottom",
@@ -370,7 +613,25 @@ export function ControlPage({
 
   const send = async (raw: string, confirm = false) => {
     const value = raw.trim();
-    if (!value || busy) return;
+    if (!value || busy || chatBusy) return;
+    // Routing composer POC-10 (§3.1.1): ruang terbuka + project cocok + teks
+    // LAYAK chat → endpoint chat. "Layak" dinilai SERVER lewat
+    // /work/chat/eligible (aturan hidup di intent.mjs bersama tesnya) — UI
+    // tidak menyalin kosakata verba/prefix, dua salinan pasti menyimpang.
+    // Command ("/…", verba task) tetap ke router, termasuk jalur CONFIRM.
+    if (!confirm && chatRoomUsable) {
+      let eligible = false;
+      try {
+        eligible = (await semanggi.chatEligible(value)).eligible;
+      } catch {
+        // Gerbang tak terjangkau → jatuh ke jalur router: menahan pesan
+        // hanya karena pemeriksaan routing gagal membuat chat terasa mati.
+      }
+      if (eligible) {
+        await sendChat(value);
+        return;
+      }
+    }
     setBusy(true);
     setError(null);
     if (!confirm) setMessages((prev) => [...prev, { kind: "operator", text: value, at: Date.now() }]);
@@ -409,7 +670,14 @@ export function ControlPage({
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const uploadFiles = async (list: FileList | null) => {
-    if (!list || list.length === 0 || !projectId) return;
+    if (!list || list.length === 0) return;
+    // Ruang terbuka → akar sesi chat (§7.5); tanpa ruang → staging proyek
+    // (D76/D77). Dua akar, dua umur: staging diadopsi task, chat disapu TTL.
+    if (roomSession) {
+      await uploadChatFiles(list);
+      return;
+    }
+    if (!projectId) return;
     setUploading(true);
     setUploadError(null);
     const inserted: string[] = [];
@@ -470,6 +738,11 @@ export function ControlPage({
     setText((prev) => prev.replace(/@tmp\/uploads\/\S+/g, "").replace(/[ \t]{2,}/g, " ").trimEnd());
     setAttachments([]);
     setUploadError(null);
+    // Chip chat milik sesi — sesi TIDAK ikut pindah project (§7.3), tapi
+    // lampiran yang menunggu di composer tidak boleh menyusup ke ruang yang
+    // project-nya sudah lain.
+    setChatAttachments([]);
+    setChatUploadError(null);
   }, [projectId]);
 
   // No PageShell here (unlike every other Semanggi page): PageShell lays out
@@ -495,7 +768,8 @@ export function ControlPage({
           ) : null}
           <h1 className="text-2xl font-semibold tracking-tight">Command Center</h1>
           <p className="mt-0.5 text-xs text-muted-foreground">
-            Conversation, a command on an existing task, or new work to decompose — the intent router decides which.
+            Conversation, a command on an existing task, or new work to decompose — with a chat session open,
+            free-form questions go to its Brain.
           </p>
         </div>
         <label className="flex items-center gap-2 text-xs">
@@ -516,55 +790,162 @@ export function ControlPage({
           <LoadError error={error} />
         </div>
       ) : null}
+      {chatError ? (
+        <div className="px-6 pt-3">
+          <LoadError
+            error={chatError}
+            onRetry={roomSession ? () => setChatPollTick((t) => t + 1) : undefined}
+          />
+        </div>
+      ) : null}
 
-      {/* `relative` anchors the jump-to-bottom button to this scroll region
-          specifically, not the page — so it stays put over the conversation
-          regardless of where the composer or header end up. */}
-      <div className="relative min-h-0 flex-1">
-        <div ref={scrollRef} onScroll={handleScroll} className="h-full overflow-y-auto">
-          <div
-            className="mx-auto flex w-full max-w-3xl flex-col gap-3 px-6 py-4"
-            style={{ paddingBottom: composerHeight + 16 }}
-          >
-            {messages.length === 0 ? (
-              <ChatEmptyState
-                docs={docs}
-                onPick={(value) => {
-                  // Caret ikut dipindah ke ujung: token yang sedang diketik
-                  // ditentukan oleh posisi kursor, jadi pill "/doc @" hanya
-                  // memunculkan pencarian berkas kalau kursornya memang di
-                  // belakang "@".
-                  setText(value);
-                  setCaret(value.length);
-                  textareaRef.current?.focus();
-                }}
-              />
+      <div className="flex min-h-0 flex-1">
+        {/* Sidebar sesi chat (§12.8) — tersembunyi di bawah lg. Padding bawah
+            setinggi composer yang fixed: tanpa itu sesi paling bawah bersembunyi
+            di balik bilah input. */}
+        <aside
+          className="hidden w-64 shrink-0 overflow-y-auto border-r border-border/70 lg:block"
+          style={{ paddingBottom: composerHeight }}
+        >
+          <ChatSessionsSidebar
+            sessions={chatSessions}
+            activeSessionId={chatSessionId}
+            onOpen={openRoom}
+            onNew={() => setPickerMode("new")}
+            onArchiveToggle={(session) => void toggleArchive(session)}
+          />
+        </aside>
+
+        {/* `relative` anchors the jump-to-bottom button to this scroll region
+            specifically, not the page — so it stays put over the conversation
+            regardless of where the composer or header end up. */}
+        <div className="relative min-h-0 flex-1">
+          <div ref={scrollRef} onScroll={handleScroll} className="h-full overflow-y-auto">
+            {roomSession ? (
+              /* Sticky di dalam region scroll — identitas ruang ikut gulir
+               * keluar pandangan justru saat transkrip panjang dibaca. */
+              <div className="sticky top-0 z-10">
+                <ChatRoomHeader
+                  session={roomSession}
+                  brain={roomBrain}
+                  onPickBrain={() => setPickerMode("switch")}
+                  onArchiveToggle={() => void toggleArchive(roomSession)}
+                  onClose={closeRoom}
+                />
+              </div>
             ) : null}
+            <div
+              className="mx-auto flex w-full max-w-3xl flex-col gap-3 px-6 py-4"
+              style={{ paddingBottom: composerHeight + 16 }}
+            >
+              {roomSession && openChat ? (
+                <>
+                  {!roomProjectMatches ? (
+                    <Notice tone="warning">
+                      {`This session belongs to project ${
+                        projects.find((p) => p.id === roomSession.projectId)?.name ?? roomSession.projectId
+                      } — switch the Active Project there to keep chatting in it. Commands still go to the router.`}
+                    </Notice>
+                  ) : null}
+                  {roomSession.status === "ARCHIVED" ? (
+                    <Notice tone="warning">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span>This session is archived — unarchive it to send messages.</span>
+                        <Button size="sm" variant="outline" onClick={() => void toggleArchive(roomSession)}>
+                          Unarchive
+                        </Button>
+                      </div>
+                    </Notice>
+                  ) : null}
+                  {openChat.messages.length === 0 && roomRouterMessages.length === 0 ? (
+                    <ChatRoomEmptyState
+                      onPick={(value) => {
+                        setText(value);
+                        setCaret(value.length);
+                        textareaRef.current?.focus();
+                      }}
+                    />
+                  ) : null}
 
-            {messages.map((message, index) =>
-              message.kind === "operator" ? (
-                <div key={index} className="flex justify-end">
-                  {/* Tinted, not filled: a full `bg-primary` bubble reads as a
+                  {/* Transkrip server + balasan router yang lahir sejak ruang
+                   * dibuka, interleave menurut waktu — command yang diketik di
+                   * ruang tetap dijawab inline, tapi badge-nya menyatakan
+                   * bahwa balasan itu milik riwayat router, bukan transkrip
+                   * sesi yang tersimpan. */}
+                  {[
+                    ...openChat.messages.map((m) => ({
+                      t: m.createdAt,
+                      key: m.id,
+                      node: <ChatMessageView message={m} brain={roomBrain} onOpenFile={viewer.open} />,
+                    })),
+                    ...roomRouterMessages.map((m, i) => ({
+                      t: m.at,
+                      key: `local-${m.at}-${i}`,
+                      node:
+                        m.kind === "operator" ? (
+                          <div className="flex justify-end">
+                            <div className="max-w-[82%] rounded-[20px] bg-primary/15 px-4 py-2.5 text-sm leading-relaxed text-foreground">
+                              {m.text}
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="space-y-1">
+                            <div className="px-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+                              Router — kept in the command history, not this transcript
+                            </div>
+                            <SystemMessage reply={m.reply} onOpenTask={setOpenTask} onOpenFile={viewer.open} />
+                          </div>
+                        ),
+                    })),
+                  ]
+                    .sort((a, b) => a.t - b.t)
+                    .map((item) => (
+                      <div key={item.key}>{item.node}</div>
+                    ))}
+                </>
+              ) : (
+                <>
+                  {messages.length === 0 ? (
+                    <ChatEmptyState
+                      docs={docs}
+                      onPick={(value) => {
+                        // Caret ikut dipindah ke ujung: token yang sedang diketik
+                        // ditentukan oleh posisi kursor, jadi pill "/doc @" hanya
+                        // memunculkan pencarian berkas kalau kursornya memang di
+                        // belakang "@".
+                        setText(value);
+                        setCaret(value.length);
+                        textareaRef.current?.focus();
+                      }}
+                    />
+                  ) : null}
+
+                  {messages.map((message, index) =>
+                    message.kind === "operator" ? (
+                      <div key={index} className="flex justify-end">
+                        {/* Tinted, not filled: a full `bg-primary` bubble reads as a
                       button and dominates the column; /15 keeps the operator's
                       own words visually secondary to the system's replies. */}
-                  <div className="max-w-[82%] rounded-[20px] bg-primary/15 px-4 py-2.5 text-sm leading-relaxed text-foreground">
-                    {message.text}
-                  </div>
-                </div>
-              ) : (
-                <SystemMessage key={index} reply={message.reply} onOpenTask={setOpenTask} onOpenFile={viewer.open} />
-              ),
-            )}
-            {busy ? <ThinkingBubble /> : null}
-            <div ref={endRef} />
+                        <div className="max-w-[82%] rounded-[20px] bg-primary/15 px-4 py-2.5 text-sm leading-relaxed text-foreground">
+                          {message.text}
+                        </div>
+                      </div>
+                    ) : (
+                      <SystemMessage key={index} reply={message.reply} onOpenTask={setOpenTask} onOpenFile={viewer.open} />
+                    ),
+                  )}
+                </>
+              )}
+              {busy ? <ThinkingBubble /> : null}
+              <div ref={endRef} />
+            </div>
           </div>
-        </div>
 
-        {/* Only shown once there's somewhere to jump TO — a conversation that
-            already fits on screen has no "end" worth a button for. The bottom
-            offset matches the fixed composer's height plus breathing room, or
-            the button would sit behind the input. */}
-        {!atBottom && messages.length > 0 ? (
+          {/* Only shown once there's somewhere to jump TO — a conversation that
+              already fits on screen has no "end" worth a button for. The bottom
+              offset matches the fixed composer's height plus breathing room, or
+              the button would sit behind the input. */}
+          {!atBottom && (messages.length > 0 || (openChat?.messages.length ?? 0) > 0) ? (
           <button
             type="button"
             aria-label="Jump to latest message"
@@ -575,6 +956,7 @@ export function ControlPage({
             <ArrowDown className="h-4 w-4" />
           </button>
         ) : null}
+        </div>
       </div>
 
       {/* position:fixed against the window — the composer must stay visible
@@ -645,6 +1027,11 @@ export function ControlPage({
               <Notice tone="warning">{uploadError}</Notice>
             </div>
           ) : null}
+          {chatUploadError ? (
+            <div className="pb-2">
+              <Notice tone="warning">{chatUploadError}</Notice>
+            </div>
+          ) : null}
           <form
             onSubmit={(event) => {
               event.preventDefault();
@@ -652,7 +1039,7 @@ export function ControlPage({
             }}
           >
             <div className="rounded-[24px] border border-border bg-card px-3 py-2 shadow-sm focus-within:ring-1 focus-within:ring-ring">
-              {attachments.length > 0 ? (
+              {(roomSession ? chatAttachments : attachments).length > 0 ? (
                 // Chip DI DALAM kartu composer, bukan di atasnya: mereka bagian
                 // dari pesan yang sedang disusun — ring focus-within kartu ikut
                 // membingkainya. Dua tombol per chip karena dua tujuan berbeda:
@@ -660,7 +1047,7 @@ export function ControlPage({
                 // jalur penuh (staging) ada di title, sebagaimana file chip di
                 // balasan chat.
                 <div className="mb-2 flex flex-wrap gap-1.5">
-                  {attachments.map((attachment) => (
+                  {(roomSession ? chatAttachments : attachments).map((attachment) => (
                     <span
                       key={attachment.path}
                       className="inline-flex items-center gap-0.5 rounded-full border border-border bg-background py-0.5 pl-2 pr-1 text-[11px]"
@@ -677,9 +1064,15 @@ export function ControlPage({
                       <button
                         type="button"
                         aria-label={`Remove ${attachment.name}`}
-                        title="Remove attachment (deletes the staged file)"
-                        disabled={busy || uploading}
-                        onClick={() => void removeAttachment(attachment)}
+                        title={
+                          roomSession
+                            ? "Remove from this message (the file is swept by the TTL cleaner)"
+                            : "Remove attachment (deletes the staged file)"
+                        }
+                        disabled={busy || uploading || chatBusy || chatUploading}
+                        onClick={() =>
+                          roomSession ? removeChatAttachment(attachment) : void removeAttachment(attachment)
+                        }
                         className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
                       >
                         <X className="h-2.5 w-2.5" />
@@ -739,7 +1132,7 @@ export function ControlPage({
                     }
                   }}
                   rows={MIN_ROWS}
-                  placeholder="Message Semanggi…"
+                  placeholder={roomSession ? `Message ${roomBrain?.name ?? "brain"}…` : "Message Semanggi…"}
                   className="max-h-[200px] flex-1 resize-none border-0 bg-transparent px-1 py-1.5 text-sm outline-none focus:ring-0 placeholder:text-muted-foreground"
                 />
                 <input
@@ -757,20 +1150,34 @@ export function ControlPage({
                 <button
                   type="button"
                   aria-label="Attach text files"
-                  title="Attach text files (md, txt, json, …) — staged in tmp/uploads/, adopted into the task's deliverables/ on send, deleted after the task loads them"
-                  disabled={busy || uploading || !projectId}
+                  title={
+                    roomSession
+                      ? "Attach text files to this session (chat/<id>/uploads, referenced by your next message, swept by the TTL cleaner)"
+                      : "Attach text files (md, txt, json, …) — staged in tmp/uploads/, adopted into the task's deliverables/ on send, deleted after the task loads them"
+                  }
+                  disabled={
+                    busy ||
+                    uploading ||
+                    chatBusy ||
+                    chatUploading ||
+                    (roomSession ? !chatRoomUsable : !projectId)
+                  }
                   onClick={() => fileInputRef.current?.click()}
                   className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-opacity hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
                 >
-                  {uploading ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Paperclip className="h-4 w-4" />}
+                  {uploading || chatUploading ? (
+                    <LoaderCircle className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Paperclip className="h-4 w-4" />
+                  )}
                 </button>
                 <button
                   type="submit"
                   aria-label="Send"
-                  disabled={busy || text.trim().length === 0}
+                  disabled={busy || chatBusy || text.trim().length === 0}
                   className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground transition-opacity disabled:cursor-not-allowed disabled:opacity-40"
                 >
-                  {busy ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <SendHorizontal className="h-4 w-4" />}
+                  {busy || chatBusy ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <SendHorizontal className="h-4 w-4" />}
                 </button>
               </div>
             </div>
@@ -818,6 +1225,35 @@ export function ControlPage({
           }}
           onClose={() => setOpenDoc(null)}
         />
+      ) : null}
+
+      {pickerMode ? (
+        <BrainPickerModal
+          brains={chatBrains}
+          currentBrainId={pickerMode === "switch" ? (roomSession?.brainId ?? null) : null}
+          allowDefault={pickerMode === "new"}
+          onSelect={(brainId) => void handlePickerSelect(brainId)}
+          onClose={() => setPickerMode(null)}
+        />
+      ) : null}
+
+      {brainSwitchTarget ? (
+        <Modal
+          title={`Switch to ${brainSwitchTarget.name}?`}
+          subtitle={`${brainSwitchTarget.provider}/${brainSwitchTarget.model}`}
+          onClose={() => setBrainSwitchTarget(null)}
+          width="max-w-md"
+          actions={
+            <Button size="sm" variant="danger" disabled={chatBusy} onClick={() => void confirmBrainSwitch()}>
+              Yes, reset context
+            </Button>
+          }
+        >
+          <p className="text-sm leading-relaxed">
+            Switching this session&apos;s Brain resets the model&apos;s conversation context — the new Brain answers
+            without the history of this session. The transcript itself stays readable.
+          </p>
+        </Modal>
       ) : null}
 
       {openTask ? (

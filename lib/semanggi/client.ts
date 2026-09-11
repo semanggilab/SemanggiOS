@@ -348,15 +348,6 @@ export type ModelMapRow = {
   effortMode: EffortMode | null;
   evidence: string | null;
   levelsUpdatedAt: number | null;
-  /**
-   * D84: batas per model dari config gateway — BUKAN dari models.list, yang
-   * diukur live di 2026.8.2 tidak membawa satu pun angka batas. Baca saja di
-   * halaman ini: yang memilikinya adalah openclaw.json, dan Semanggi tidak
-   * punya jalur tulis ke sana. `null` berarti gateway tidak melaporkannya,
-   * yang berbeda artinya dari nol.
-   */
-  contextWindow: number | null;
-  maxTokens: number | null;
   sources: string[];
   /**
    * D67: why this row may NOT be deleted (empty = deletable). Computed by the
@@ -475,6 +466,43 @@ export type ControlReply = {
   /** DOC: berkas yang dirujuk permintaan plus keluarannya — apa yang bisa
    *  dibuka langsung dari balasan tanpa mengetik ulang path-nya. */
   files?: string[];
+};
+
+/**
+ * POC-10: one ad-hoc chat session (§7). A session is NOT a task — it never
+ * touches the task state machine; its transcript lives in chat_messages and
+ * its brain is resolved from the Role Brain Map's "chat" role unless the
+ * operator picked one explicitly.
+ */
+export type ChatSession = {
+  id: string;
+  projectId: string;
+  brainId: string;
+  title: string | null;
+  /** Stable gateway session key once the first message has been dispatched
+   *  (`chat:<sessionId>:<ms>`); null until then. Read-only from the UI. */
+  gatewaySessionRef: string | null;
+  status: "ACTIVE" | "ARCHIVED";
+  actor: string;
+  createdAt: number;
+  lastActiveAt: number;
+};
+
+/** One row of a session transcript. Operator rows land DONE immediately;
+ *  brain rows go PENDING → RUNNING → DONE/FAILED as the dispatch pipeline
+ *  progresses (§8.3) — the statuses the room's 10s poll keys on. */
+export type ChatMessage = {
+  id: string;
+  sessionId: string;
+  seq: number;
+  role: "operator" | "brain";
+  content: string | null;
+  /** Paths under chat/<sessionId>/uploads/ — the server enforces that prefix
+   *  on send; the chips in the composer come from the upload endpoint. */
+  attachments: string[] | null;
+  status: "PENDING" | "RUNNING" | "DONE" | "FAILED";
+  error: string | null;
+  createdAt: number;
 };
 
 export class SemanggiError extends Error {
@@ -739,6 +767,58 @@ export const semanggi = {
 
   control: (payload: { text: string; projectId?: string; template?: string; profile?: string; confirm?: boolean }) =>
     call<ControlReply>("POST", "work/control/message", payload),
+
+  // --- POC-10 chat (T5, spec §8) --------------------------------------------
+  //
+  // The composer routing gate lives on the SERVER (§12.6.4): the client asks
+  // "is this text chat-eligible?" rather than re-deriving the verb/prefix/
+  // chatty rules here — two copies of the router's vocabulary would diverge
+  // the first time one of them changes.
+  chatEligible: (text: string) =>
+    call<{ eligible: boolean }>("GET", `work/chat/eligible?text=${encodeURIComponent(text)}`),
+  // Sidebar list — server orders newest-first by last_active_at.
+  listChatSessions: (projectId: string) =>
+    call<{ sessions: ChatSession[] }>("GET", `work/chat/sessions?projectId=${encodeURIComponent(projectId)}`),
+  chatSession: (id: string) => call<{ session: ChatSession; messages: ChatMessage[] }>("GET", `work/chat/sessions/${id}`),
+  createChatSession: (body: { projectId: string; brainId?: string; title?: string }) =>
+    call<{ session: ChatSession; brainDefault: boolean }>("POST", "work/chat/sessions", body),
+  patchChatSession: (id: string, patch: { title?: string; status?: "ACTIVE" | "ARCHIVED" }) =>
+    call<{ session: ChatSession }>("PATCH", `work/chat/sessions/${id}`, patch),
+  // Admin-only server-side; exposed for completeness/cleanup tooling, not
+  // wired to a button — archive is the operator-facing end of a session.
+  deleteChatSession: (id: string) => call<{ deleted: boolean; sessionId: string }>("DELETE", `work/chat/sessions/${id}`),
+  sendChatMessage: (id: string, body: { text: string; projectId: string; attachments?: string[] }) =>
+    call<{ operatorMessage: ChatMessage; message: ChatMessage }>("POST", `work/chat/sessions/${id}/messages`, body),
+  // §10.2: the reset-context switch NEVER happens without confirmReset — the
+  // server answers 409 naming the brain until the client says yes explicitly.
+  switchChatBrain: (id: string, brainId: string, confirmReset = false) =>
+    call<{ session: ChatSession; changed: boolean }>("POST", `work/chat/sessions/${id}/brain`, {
+      brainId,
+      confirmReset,
+    }),
+  // Same raw-bytes shape as `upload` above (D76) but rooted at the session:
+  // chat/<sessionId>/uploads/ — files are NEVER adopted by a task and are
+  // swept by the TTL cleaner, not by a chip "×" delete.
+  uploadChatFile: async (id: string, name: string, bytes: ArrayBuffer | Blob | File) => {
+    const res = await fetch(`/api/semanggi/work/chat/sessions/${id}/uploads?name=${encodeURIComponent(name)}`, {
+      method: "POST",
+      headers: { "content-type": "application/octet-stream" },
+      body: bytes,
+      cache: "no-store",
+    });
+    const text = await res.text();
+    let parsed: unknown = null;
+    try {
+      parsed = text ? JSON.parse(text) : null;
+    } catch {
+      throw new SemanggiError(`Unexpected non-JSON reply (HTTP ${res.status})`, res.status);
+    }
+    if (!res.ok) {
+      const payload = parsed as { error?: string; code?: string } | null;
+      throw new SemanggiError(payload?.error ?? `HTTP ${res.status}`, res.status, payload?.code ?? null);
+    }
+    return parsed as { ok: true; path: string; size: number };
+  },
 };
 
 // --- kosakata status ---------------------------------------------------------

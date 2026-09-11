@@ -92,11 +92,6 @@ const ALLOWED: Array<{ method: string; pattern: RegExp }> = [
   { method: "GET", pattern: /^work\/model-map$/ },
   { method: "POST", pattern: /^work\/resources$/ },
   { method: "PATCH", pattern: /^work\/resources$/ },
-  // D85: memulihkan sinyal kuota yang tercatat SALAH alamat (harness yang
-  // dirutekan ke agen lain membuat penolakan GLM diparkir pada resource
-  // claude-code). Admin-only di controller; query param, bukan segmen path,
-  // karena model id groq mengandung "/".
-  { method: "POST", pattern: /^work\/resources\/clear-quota$/ },
   { method: "PUT", pattern: /^work\/thinking-levels$/ },
   // D67: row deletion from the Model Map + Brain forms. Same query-param
   // identity rule as PATCH above; the brains delete has existed on the
@@ -118,6 +113,20 @@ const ALLOWED: Array<{ method: string; pattern: RegExp }> = [
   { method: "POST", pattern: /^work\/gateway\/thinking-levels\/refresh$/ },
   { method: "POST", pattern: /^work\/gateway\/thinking-levels\/probe$/ },
   { method: "GET", pattern: /^work\/gateway\/thinking-levels\/probe\/status$/ },
+  // POC-10 chat (T5, spec §8): session CRUD + transcript + messages + brain
+  // switch + eligibility gate. Same lesson as the D55 docs PUT above: a
+  // controller route is not real for this page until it is listed here —
+  // the chat endpoints shipped in T3 and would 404 behind this proxy
+  // without these entries.
+  { method: "GET", pattern: /^work\/chat\/sessions$/ },
+  { method: "GET", pattern: /^work\/chat\/eligible$/ },
+  { method: "POST", pattern: /^work\/chat\/sessions$/ },
+  { method: "GET", pattern: /^work\/chat\/sessions\/[A-Za-z0-9_-]+$/ },
+  { method: "PATCH", pattern: /^work\/chat\/sessions\/[A-Za-z0-9_-]+$/ },
+  { method: "DELETE", pattern: /^work\/chat\/sessions\/[A-Za-z0-9_-]+$/ },
+  { method: "POST", pattern: /^work\/chat\/sessions\/[A-Za-z0-9_-]+\/messages$/ },
+  { method: "POST", pattern: /^work\/chat\/sessions\/[A-Za-z0-9_-]+\/uploads$/ },
+  { method: "POST", pattern: /^work\/chat\/sessions\/[A-Za-z0-9_-]+\/brain$/ },
 ];
 
 let cachedToken: string | null = null;
@@ -173,11 +182,14 @@ async function forward(request: Request, context: { params: Promise<{ path: stri
   target.search = incoming.search;
 
   const actor = status.username?.trim() || "agentos";
-  // Unggahan (D76): body adalah bytes mentah — request.text() akan
-  // men-decode-nya sebagai UTF-8 dan merusak berkas biner sebelum sampai ke
-  // controller. arrayBuffer meneruskan apa adanya; content-type octet-stream
-  // dari klien dipertahankan supaya dispatcher controller tahu bentuknya.
-  const isUpload = request.method === "POST" && /^work\/projects\/[A-Za-z0-9_-]+\/uploads$/.test(joined);
+  // Unggahan (D76 + POC-10 §7.5): body adalah bytes mentah — request.text()
+  // akan men-decode-nya sebagai UTF-8 dan merusak berkas biner sebelum
+  // sampai ke controller. arrayBuffer meneruskan apa adanya; content-type
+  // octet-stream dari klien dipertahankan supaya dispatcher controller tahu
+  // bentuknya. Chat uploads take the same raw path, rooted at the session.
+  const isUpload =
+    request.method === "POST" &&
+    /^work\/(projects\/[A-Za-z0-9_-]+|chat\/sessions\/[A-Za-z0-9_-]+)\/uploads$/.test(joined);
   const body = isUpload
     ? await request.arrayBuffer()
     : ["GET", "HEAD"].includes(request.method)
