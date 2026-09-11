@@ -348,6 +348,15 @@ export type ModelMapRow = {
   effortMode: EffortMode | null;
   evidence: string | null;
   levelsUpdatedAt: number | null;
+  /**
+   * D84: batas per model dari config gateway — BUKAN dari models.list, yang
+   * diukur live di 2026.8.2 tidak membawa satu pun angka batas. Baca saja di
+   * halaman ini: yang memilikinya adalah openclaw.json, dan Semanggi tidak
+   * punya jalur tulis ke sana. `null` berarti gateway tidak melaporkannya,
+   * yang berbeda artinya dari nol.
+   */
+  contextWindow: number | null;
+  maxTokens: number | null;
   sources: string[];
   /**
    * D67: why this row may NOT be deleted (empty = deletable). Computed by the
