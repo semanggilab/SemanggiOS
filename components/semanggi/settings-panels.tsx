@@ -2459,17 +2459,30 @@ export function SemanggiBrainMapPanel() {
  * model yang batasnya nol adalah dua keadaan berbeda, dan menyamakannya di
  * kolom ini akan membuat model sehat terlihat lumpuh.
  */
-function formatTokens(value: number | null | undefined): string {
-  if (value === null || value === undefined || !Number.isFinite(value)) return "—";
-  if (value >= 1_000_000) {
-    const m = value / 1_000_000;
+/**
+ * D92: menerima angka berbentuk string juga.
+ *
+ * Nilainya menyeberangi batas layanan, dan bentuknya pernah berubah tanpa
+ * pemberitahuan: setelah controller pindah ke Postgres, bigint tiba sebagai
+ * "200000", bukan 200000. `Number.isFinite("200000")` bernilai false, jadi
+ * SETIAP sel menjadi "—" — tidak seperti kerusakan, melainkan seperti data
+ * yang memang belum diisi. Controller kini menormalkannya di hulu; ini lapis
+ * kedua, karena di sinilah salah bacanya paling mahal: ia berbohong dengan
+ * tenang.
+ */
+function formatTokens(value: number | string | null | undefined): string {
+  const numeric = typeof value === "string" ? Number(value) : value;
+  if (numeric === null || numeric === undefined || !Number.isFinite(numeric)) return "—";
+  const value_ = numeric;
+  if (value_ >= 1_000_000) {
+    const m = value_ / 1_000_000;
     return `${Number.isInteger(m) ? m : m.toFixed(1)}M`;
   }
-  if (value >= 1000) {
-    const k = value / 1000;
+  if (value_ >= 1000) {
+    const k = value_ / 1000;
     return `${Number.isInteger(k) ? k : k.toFixed(1)}K`;
   }
-  return String(value);
+  return String(value_);
 }
 
 const AVAILABILITY_TONE: Record<string, "success" | "warning" | "danger" | "neutral"> = {
