@@ -215,6 +215,7 @@ export function TaskDialog({
             {task ? (
               <Controls
                 task={task}
+                workItemCount={detail?.workItems.length ?? 0}
                 models={models}
                 model={model}
                 onModel={setModel}
@@ -422,6 +423,7 @@ const SESSION_MODE_HINT: Record<"CONTINUE" | "FORK" | "FRESH", string> = {
 
 function Controls({
   task,
+  workItemCount,
   models,
   model,
   onModel,
@@ -431,6 +433,7 @@ function Controls({
   act,
 }: {
   task: Task;
+  workItemCount: number;
   models: CatalogModel[];
   model: string;
   onModel: (value: string) => void;
@@ -519,7 +522,31 @@ function Controls({
           </div>
         </div>
 
-        {canRevise ? (
+        {task.planMode !== "DIRECT_EXECUTION" ? (
+          <div className="rounded-md border border-border p-2.5">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-xs font-medium">TODO plan</div>
+                <div className="text-[11px] text-muted-foreground">{task.planMode.replaceAll("_", " ")} · score {task.complexityScore}</div>
+              </div>
+              <Button size="sm" variant="outline" disabled={busy || workItemCount > 0} onClick={() => act(() => semanggi.decompose(task.id))}>
+                {workItemCount > 0 ? `${workItemCount} TODOs created` : "Create TODOs"}
+              </Button>
+            </div>
+          </div>
+        ) : null}
+
+        {canRevise && task.status === "BLOCKED" ? (
+          <div className="rounded-md border border-border p-2.5">
+            <div className="mb-2 text-xs font-medium">Resume</div>
+            <p className="text-[11px] text-muted-foreground">
+              Continues from the latest checkpoint as a new immutable execution. No artificial “continue” message is added.
+            </p>
+            <div className="mt-2 flex justify-end">
+              <Button size="sm" disabled={busy} onClick={() => act(() => semanggi.resume(task.id))}>Resume</Button>
+            </div>
+          </div>
+        ) : canRevise ? (
           <div className="rounded-md border border-border p-2.5">
             <div className="mb-2 text-xs font-medium">
               {reviseLabel}
@@ -586,7 +613,7 @@ function InfoTab({
   detail: TaskDetail;
   onOpenExecution: (execution: Execution) => void;
 }) {
-  const { task, executions, dependencies } = detail;
+  const { task, executions, dependencies, workItems, progress, checkpoints } = detail;
   const rows: Array<[string, string, string?]> = [
     ["Project", task.projectId],
     ["Priority", `${task.priority} (effective ${task.effectivePriority})`],
@@ -630,6 +657,41 @@ function InfoTab({
                 <CopyButton text={d.id} label={`Copy task ID ${d.id}`} className="mx-0.5 -translate-y-[0.1em] text-[10px]" />
                 · {d.status}
               </Badge>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      {workItems.length > 0 ? (
+        <div className="rounded-md border border-border p-3">
+          <div className="flex items-center justify-between text-xs">
+            <span className="font-medium">TODO progress</span>
+            <span className="font-mono">{progress.state.replaceAll("_", " ")} · {progress.complete}/{progress.total} · {progress.percent}%</span>
+          </div>
+          <div className="mt-2 h-2 overflow-hidden rounded-full bg-muted">
+            <div className="h-full bg-primary transition-[width]" style={{ width: `${progress.percent}%` }} />
+          </div>
+          <div className="mt-3 space-y-1">
+            {workItems.map((item) => (
+              <div key={item.id} className="flex items-center justify-between gap-3 rounded border border-border/60 px-2 py-1.5 text-xs">
+                <span className="min-w-0 truncate">{item.title}</span>
+                <Badge tone={statusTone(item.status)}>{item.status}</Badge>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      {checkpoints.length > 0 ? (
+        <div>
+          <div className="mb-1 text-xs font-medium">Checkpoints</div>
+          <div className="space-y-1">
+            {[...checkpoints].reverse().map((checkpoint) => (
+              <div key={checkpoint.id} className="flex items-center justify-between gap-2 rounded border border-border px-2 py-1.5 text-xs">
+                <span className="font-mono">{checkpoint.id}</span>
+                <span className="text-muted-foreground">{checkpoint.type}</span>
+                <span className="text-muted-foreground">{relativeTime(checkpoint.createdAt)}</span>
+              </div>
             ))}
           </div>
         </div>

@@ -172,6 +172,7 @@ export type WorkspaceFileContent = {
 export type Task = {
   id: string;
   projectId: string;
+  parentTaskId: string | null;
   title: string;
   description: string;
   priority: number;
@@ -179,6 +180,9 @@ export type Task = {
   expedited: boolean;
   expediteUntil: number | null;
   qualityClass: string;
+  planMode: "DIRECT_EXECUTION" | "LIGHTWEIGHT_PLAN" | "FULL_WORKPLAN";
+  complexityScore: number;
+  breakdownReason: string | null;
   status: string;
   waitReason: string | null;
   workerId: string | null;
@@ -222,6 +226,27 @@ export type TaskDetail = {
   executions: Execution[];
   approvals: Approval[];
   dependencies: Array<{ id: string; status: string }>;
+  checkpoints: Array<{
+    id: string;
+    taskId: string;
+    executionId: string | null;
+    type: string;
+    stopReason: string | null;
+    objective: string;
+    progress: Record<string, unknown>;
+    workspaceState: Record<string, unknown>;
+    contextSummary: string;
+    createdAt: number;
+  }>;
+  workItems: Task[];
+  progress: {
+    state: "EMPTY" | "WAITING" | "IN_PROGRESS" | "NEEDS_ATTENTION" | "COMPLETE";
+    total: number;
+    complete: number;
+    blocked: number;
+    active: number;
+    percent: number;
+  };
 };
 
 /**
@@ -613,6 +638,12 @@ export const semanggi = {
     call<{ task: Task }>("PATCH", `work/tasks/${id}`, { modelPolicy: { preferred } }),
   rerun: (id: string, sessionMode: "CONTINUE" | "FORK" | "FRESH", instruction = "") =>
     call<{ task: Task }>("POST", `work/tasks/${id}/revisions`, { sessionMode, instruction }),
+  resume: (id: string) =>
+    call<{ task: Task; resume: { checkpointId: string | null } }>("POST", `work/tasks/${id}/resume`, {
+      idempotencyKey: `resume:${id}:${crypto.randomUUID()}`,
+    }),
+  decompose: (id: string) =>
+    call<{ created: boolean; workItems: Task[] }>("POST", `work/tasks/${id}/decompose`, {}),
   decide: (approvalId: string, decision: "APPROVE" | "REJECT" | "MODIFY", note?: string) =>
     call<{ approval: Approval }>("POST", `work/approvals/${approvalId}/decide`, { decision, note }),
 
